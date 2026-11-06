@@ -1,0 +1,1489 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShotTracker Pro — Анализ попаданий</title>
+<style>
+  :root {
+    --bg: #0a0c10;
+    --panel: #12151c;
+    --panel2: #1a1f2e;
+    --accent: #e8b84b;
+    --accent2: #ff4444;
+    --accent3: #44ff88;
+    --border: #2a3040;
+    --text: #c8d0e0;
+    --text2: #6a7590;
+    --hit-color: #ff3333;
+    --grid: #1e2535;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── HEADER ── */
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    height: 54px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 18px; font-weight: 700; letter-spacing: 1px;
+  }
+  .logo svg { width: 28px; height: 28px; }
+  .logo span { color: var(--accent); }
+  .header-stats {
+    display: flex; gap: 24px; margin-left: auto;
+  }
+  .hstat {
+    text-align: center;
+    line-height: 1.2;
+  }
+  .hstat-val {
+    font-size: 20px; font-weight: 700; color: var(--accent);
+  }
+  .hstat-lbl {
+    font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px;
+  }
+  .conn-badge {
+    display: flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--panel2);
+    cursor: pointer; transition: all .2s;
+  }
+  .conn-badge:hover { border-color: var(--accent); }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #555; transition: background .3s;
+  }
+  .dot.live { background: var(--accent3); box-shadow: 0 0 6px var(--accent3); animation: pulse 1.5s infinite; }
+  .dot.error { background: var(--accent2); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* ── MAIN LAYOUT ── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── CENTER ── */
+  .center {
+    display: flex; flex-direction: column;
+    overflow: hidden; position: relative;
+  }
+
+  /* Camera + Target area */
+  .view-area {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 10px;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  .view-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    position: relative;
+  }
+  .view-label {
+    position: absolute; top: 10px; left: 10px; z-index: 5;
+    background: rgba(0,0,0,.7); padding: 3px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; letter-spacing: .5px; color: var(--accent);
+    border: 1px solid rgba(232,184,75,.3);
+  }
+  .view-label.cam { color: var(--accent3); border-color: rgba(68,255,136,.3); }
+
+  canvas, video {
+    width: 100%; height: 100%; object-fit: contain;
+    display: block;
+  }
+  #camVideo { background: #000; }
+
+  /* Placeholder */
+  .cam-placeholder {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; color: var(--text2);
+  }
+  .cam-placeholder svg { opacity: .3; }
+  .cam-placeholder p { font-size: 13px; }
+
+  /* Toolbar */
+  .toolbar {
+    height: 46px; flex-shrink: 0;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+  }
+  .btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text);
+    font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: all .18s; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  .btn.danger:hover { border-color: var(--accent2); color: var(--accent2); }
+  .btn.success { background: var(--accent3); color: #000; border-color: var(--accent3); }
+  .sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
+
+  /* ── RIGHT PANEL ── */
+  .right-panel {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-section {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--text2); margin-bottom: 12px;
+  }
+
+  /* Camera connect form */
+  .input-row { display: flex; gap: 6px; margin-bottom: 8px; }
+  input[type=text], input[type=number], select {
+    background: var(--panel2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px;
+    padding: 7px 10px; font-size: 12px; outline: none;
+    transition: border .2s;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus {
+    border-color: var(--accent);
+  }
+  input[type=text] { flex: 1; }
+  input[type=number] { width: 64px; }
+  select { flex: 1; }
+  label { font-size: 11px; color: var(--text2); margin-bottom: 4px; display: block; }
+
+  /* Sensitivity slider */
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  input[type=range] {
+    -webkit-appearance: none; flex: 1; height: 4px;
+    background: var(--border); border-radius: 2px; outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--accent); cursor: pointer;
+  }
+  .slider-val { font-size: 12px; font-weight: 700; color: var(--accent); min-width: 30px; text-align: right; }
+
+  /* Hit log */
+  .hit-log { flex: 1; overflow-y: auto; padding: 10px 14px; }
+  .hit-log::-webkit-scrollbar { width: 4px; }
+  .hit-log::-webkit-scrollbar-track { background: transparent; }
+  .hit-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .hit-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 8px;
+    background: var(--panel2); border: 1px solid var(--border);
+    margin-bottom: 6px; animation: slideIn .3s ease;
+    cursor: pointer; transition: border-color .2s;
+  }
+  .hit-item:hover { border-color: var(--accent); }
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  .hit-num {
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent2); display: flex; align-items: center;
+    justify-content: center; font-size: 11px; font-weight: 700;
+    flex-shrink: 0; color: #fff;
+  }
+  .hit-num.bull { background: #ff8800; }
+  .hit-num.x { background: var(--accent); color: #000; }
+  .hit-info { flex: 1; }
+  .hit-score { font-size: 15px; font-weight: 700; }
+  .hit-score.x-ring { color: var(--accent); }
+  .hit-meta { font-size: 10px; color: var(--text2); }
+  .hit-time { font-size: 10px; color: var(--text2); }
+
+  /* Score ring labels */
+  .score-legend {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 6px; margin-top: 4px;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px;
+  }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+
+  /* Target settings */
+  .target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+  /* Overlay flash */
+  .hit-flash {
+    position: fixed; inset: 0; pointer-events: none;
+    background: rgba(255,60,60,.18);
+    animation: flashAnim .5s ease forwards;
+    z-index: 999;
+  }
+  @keyframes flashAnim {
+    0% { opacity: 1 } 100% { opacity: 0 }
+  }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.75);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000; backdrop-filter: blur(4px);
+  }
+  .modal-overlay.hidden { display: none; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 28px; width: 400px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.7);
+  }
+  .modal h2 { font-size: 16px; margin-bottom: 18px; color: var(--accent); }
+  .modal .form-row { margin-bottom: 12px; }
+  .modal .actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+  .protocol-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .proto-tab {
+    padding: 5px 12px; border-radius: 5px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border); background: var(--panel2); cursor: pointer;
+    transition: all .15s; color: var(--text2);
+  }
+  .proto-tab.active { background: var(--accent); color: #000; border-color: var(--accent); }
+
+  /* Stat cards */
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat-card {
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; text-align: center;
+  }
+  .stat-card-val { font-size: 20px; font-weight: 700; color: var(--accent); }
+  .stat-card-lbl { font-size: 10px; color: var(--text2); text-transform: uppercase; margin-top: 2px; }
+
+  /* POI crosshair on target canvas */
+  .target-wrapper { position: relative; }
+
+  /* Group analysis */
+  .group-info {
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font-size: 12px;
+    line-height: 1.8;
+  }
+  .group-info span { color: var(--accent); font-weight: 700; }
+
+  /* Responsive tweak */
+  @media (max-width: 900px) {
+    .main { grid-template-columns: 1fr; }
+    .right-panel { display: none; }
+    .view-area { grid-template-columns: 1fr; }
+  }
+
+  .no-hits {
+    text-align: center; padding: 30px 10px; color: var(--text2); font-size: 12px;
+  }
+  .no-hits svg { opacity: .2; display: block; margin: 0 auto 10px; }
+
+  /* Zoom controls */
+  .zoom-controls {
+    position: absolute; bottom: 10px; right: 10px; z-index: 5;
+    display: flex; gap: 4px;
+  }
+  .zoom-btn {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.15);
+    color: #fff; font-size: 16px; cursor: pointer; display: flex;
+    align-items: center; justify-content: center;
+    transition: all .15s;
+  }
+  .zoom-btn:hover { background: rgba(232,184,75,.3); border-color: var(--accent); }
+
+  .rec-badge {
+    position: absolute; top: 10px; right: 10px; z-index: 5;
+    display: flex; align-items: center; gap: 5px;
+    background: rgba(255,0,0,.7); padding: 3px 9px; border-radius: 20px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+  }
+  .rec-badge .rdot {
+    width: 6px; height: 6px; border-radius: 50%; background: #fff;
+    animation: pulse 1s infinite;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 28 28" fill="none">
+      <circle cx="14" cy="14" r="13" stroke="#e8b84b" stroke-width="1.5"/>
+      <circle cx="14" cy="14" r="9" stroke="#e8b84b" stroke-width="1" stroke-dasharray="2 2"/>
+      <circle cx="14" cy="14" r="5" stroke="#e8b84b" stroke-width="1"/>
+      <circle cx="14" cy="14" r="1.5" fill="#e8b84b"/>
+      <line x1="14" y1="1" x2="14" y2="5" stroke="#e8b84b" stroke-width="1.5"/>
+      <line x1="14" y1="23" x2="14" y2="27" stroke="#e8b84b" stroke-width="1.5"/>
+      <line x1="1" y1="14" x2="5" y2="14" stroke="#e8b84b" stroke-width="1.5"/>
+      <line x1="23" y1="14" x2="27" y2="14" stroke="#e8b84b" stroke-width="1.5"/>
+    </svg>
+    Shot<span>Tracker</span> Pro
+  </div>
+
+  <div class="header-stats">
+    <div class="hstat"><div class="hstat-val" id="hTotalShots">0</div><div class="hstat-lbl">Выстрелов</div></div>
+    <div class="hstat"><div class="hstat-val" id="hTotalScore">0</div><div class="hstat-lbl">Очки</div></div>
+    <div class="hstat"><div class="hstat-val" id="hAvgScore">—</div><div class="hstat-lbl">Среднее</div></div>
+    <div class="hstat"><div class="hstat-val" id="hBestScore">—</div><div class="hstat-lbl">Лучший</div></div>
+  </div>
+
+  <div class="conn-badge" onclick="openCamModal()">
+    <div class="dot" id="connDot"></div>
+    <span id="connLabel">Подключить камеру</span>
+  </div>
+</header>
+
+<!-- ── MAIN ── -->
+<div class="main">
+
+  <!-- CENTER -->
+  <div class="center">
+    <div class="view-area">
+
+      <!-- Camera feed -->
+      <div class="view-card" id="camCard">
+        <div class="view-label cam">📷 КАМЕРА</div>
+        <div id="camPlaceholder" class="cam-placeholder">
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+            <rect x="8" y="16" width="48" height="36" rx="4" stroke="#6a7590" stroke-width="2"/>
+            <circle cx="32" cy="34" r="10" stroke="#6a7590" stroke-width="2"/>
+            <circle cx="32" cy="34" r="4" fill="#6a7590"/>
+            <rect x="22" y="10" width="20" height="8" rx="2" stroke="#6a7590" stroke-width="2"/>
+          </svg>
+          <p>IP-камера не подключена</p>
+          <p style="font-size:11px">Нажмите «Подключить камеру»</p>
+        </div>
+        <video id="camVideo" autoplay muted playsinline style="display:none"></video>
+        <canvas id="camCanvas" style="display:none"></canvas>
+        <div class="zoom-controls">
+          <div class="zoom-btn" onclick="changeZoom(-0.2)">−</div>
+          <div class="zoom-btn" onclick="changeZoom(0.2)">+</div>
+        </div>
+        <div class="rec-badge" id="recBadge" style="display:none">
+          <div class="rdot"></div> REC
+        </div>
+      </div>
+
+      <!-- Target display -->
+      <div class="view-card">
+        <div class="view-label">🎯 МИШЕНЬ</div>
+        <canvas id="targetCanvas"></canvas>
+        <div class="zoom-controls">
+          <div class="zoom-btn" onclick="targetZoom(-0.15)">−</div>
+          <div class="zoom-btn" onclick="targetZoom(0.15)">+</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TOOLBAR -->
+    <div class="toolbar">
+      <button class="btn" onclick="openCamModal()">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="1" y="4" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="8" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="5" y="2" width="6" height="3" rx="1" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
+        Камера
+      </button>
+
+      <button class="btn" id="btnAnalyze" onclick="toggleAnalysis()">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="8" cy="8" r="4" stroke="currentColor" stroke-width="1.2"/>
+          <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+        </svg>
+        Анализ: СТОП
+      </button>
+
+      <button class="btn success" onclick="simulateHit()" id="btnSimulate">
+        🎯 Тест-попадание
+      </button>
+
+      <div class="sep"></div>
+
+      <button class="btn" onclick="clearHits()">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M3 4h10M6 4V3h4v1M5 4l1 9h4l1-9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        Очистить
+      </button>
+
+      <button class="btn" onclick="exportResults()">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M8 2v9M5 8l3 3 3-3M3 13h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        Экспорт
+      </button>
+
+      <div class="sep"></div>
+
+      <select id="targetType" onchange="changeTargetType()" style="height:30px;font-size:11px">
+        <option value="pistol">Пистолетная (ИСС)</option>
+        <option value="rifle">Винтовочная (300м)</option>
+        <option value="airgun">Пневматика (10м)</option>
+        <option value="biathlon">Биатлон</option>
+        <option value="silhouette">Силуэт</option>
+      </select>
+
+      <select id="distSelect" style="height:30px;font-size:11px">
+        <option>10 м</option>
+        <option>25 м</option>
+        <option selected>50 м</option>
+        <option>100 м</option>
+        <option>200 м</option>
+        <option>300 м</option>
+      </select>
+
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+
+    <!-- Stats -->
+    <div class="panel-section">
+      <div class="section-title">Статистика серии</div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-card-val" id="sTotalShots">0</div>
+          <div class="stat-card-lbl">Выстрелов</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-val" id="sScore">0</div>
+          <div class="stat-card-lbl">Очки</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-val" id="sAvg">—</div>
+          <div class="stat-card-lbl">Среднее</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-val" id="sXCount">0</div>
+          <div class="stat-card-lbl">X-Ring</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Group analysis -->
+    <div class="panel-section">
+      <div class="section-title">Анализ группы</div>
+      <div class="group-info" id="groupInfo">
+        <div style="color:var(--text2);font-size:11px;text-align:center;padding:6px">Нет данных</div>
+      </div>
+    </div>
+
+    <!-- Sensitivity -->
+    <div class="panel-section">
+      <div class="section-title">Чувствительность детектора</div>
+      <label>Порог изменения пикселей</label>
+      <div class="slider-row">
+        <input type="range" id="sensitivity" min="5" max="80" value="25" oninput="updateSensitivity(this.value)">
+        <span class="slider-val" id="sensVal">25</span>
+      </div>
+      <label style="margin-top:8px">Минимальный размер пятна (px)</label>
+      <div class="slider-row">
+        <input type="range" id="minBlobSize" min="3" max="40" value="10" oninput="updateBlobSize(this.value)">
+        <span class="slider-val" id="blobVal">10</span>
+      </div>
+    </div>
+
+    <!-- Hit log -->
+    <div class="panel-section" style="flex-shrink:0">
+      <div class="section-title">Журнал попаданий</div>
+    </div>
+    <div class="hit-log" id="hitLog">
+      <div class="no-hits">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <circle cx="18" cy="18" r="17" stroke="#6a7590" stroke-width="1.5"/>
+          <circle cx="18" cy="18" r="9" stroke="#6a7590" stroke-width="1.5"/>
+          <circle cx="18" cy="18" r="2" fill="#6a7590"/>
+        </svg>
+        Попаданий нет
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── MODAL: Camera connect ── -->
+<div class="modal-overlay hidden" id="camModal">
+  <div class="modal">
+    <h2>🎥 Подключение камеры</h2>
+
+    <div class="protocol-tabs">
+      <div class="proto-tab active" onclick="setProto('http')">HTTP/MJPEG</div>
+      <div class="proto-tab" onclick="setProto('rtsp')">RTSP</div>
+      <div class="proto-tab" onclick="setProto('webcam')">Веб-камера</div>
+      <div class="proto-tab" onclick="setProto('demo')">Демо</div>
+    </div>
+
+    <div id="protoFields">
+      <!-- HTTP -->
+      <div id="fieldHttp">
+        <div class="form-row">
+          <label>URL потока (MJPEG/JPEG)</label>
+          <input type="text" id="camUrl" placeholder="http://192.168.1.100:8080/video" value="http://192.168.1.100:8080/video">
+        </div>
+        <div class="form-row">
+          <label>Логин / Пароль (если нужно)</label>
+          <div class="input-row">
+            <input type="text" id="camUser" placeholder="admin">
+            <input type="text" id="camPass" placeholder="password" style="width:110px">
+          </div>
+        </div>
+      </div>
+      <!-- RTSP (info) -->
+      <div id="fieldRtsp" style="display:none">
+        <div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--text2);line-height:1.7">
+          <b style="color:var(--accent)">⚠ RTSP в браузере</b><br>
+          RTSP-поток требует промежуточного прокси (FFmpeg → HLS/WebRTC).<br><br>
+          Введите URL для конвертации:
+          <input type="text" id="rtspUrl" placeholder="rtsp://192.168.1.100:554/stream" style="margin-top:8px;width:100%">
+          <br><br>
+          Команда FFmpeg для ретрансляции:<br>
+          <code style="color:var(--accent3);font-size:10px;word-break:break-all">
+            ffmpeg -i rtsp://... -f mjpeg http://localhost:8090/stream
+          </code>
+        </div>
+      </div>
+      <!-- Webcam -->
+      <div id="fieldWebcam" style="display:none">
+        <div class="form-row">
+          <label>Выберите камеру</label>
+          <select id="webcamSelect" style="width:100%">
+            <option>Загрузка списка...</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Разрешение</label>
+          <select id="webcamRes" style="width:100%">
+            <option value="640x480">640×480</option>
+            <option value="1280x720" selected>1280×720 HD</option>
+            <option value="1920x1080">1920×1080 Full HD</option>
+          </select>
+        </div>
+      </div>
+      <!-- Demo -->
+      <div id="fieldDemo" style="display:none">
+        <div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:12px;color:var(--text2);line-height:1.8">
+          <b style="color:var(--accent3)">✓ Демо-режим</b><br>
+          Будет использоваться виртуальная мишень с автоматической симуляцией выстрелов.
+          Детектор попаданий работает в полноценном режиме.
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-top:12px">
+      <label>Частота анализа кадров</label>
+      <div class="slider-row">
+        <input type="range" id="fps" min="1" max="30" value="10">
+        <span class="slider-val" id="fpsVal">10</span> <span style="font-size:11px;color:var(--text2)">кад/с</span>
+      </div>
+    </div>
+
+    <div class="modal .actions" style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
+      <button class="btn danger" onclick="closeCamModal()">Отмена</button>
+      <button class="btn active" onclick="connectCamera()">🔌 Подключить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+const state = {
+  hits: [],
+  totalScore: 0,
+  isAnalyzing: true,
+  connected: false,
+  protocol: 'http',
+  sensitivity: 25,
+  minBlobSize: 10,
+  fps: 10,
+  targetZoom: 1,
+  camZoom: 1,
+  targetType: 'pistol',
+  prevFrame: null,
+  animFrameId: null,
+  demoInterval: null,
+  analysisInterval: null,
+  camStream: null,
+};
+
+// Score rings config per target type
+const TARGET_CONFIGS = {
+  pistol: {
+    name: 'Пистолетная ИСС',
+    rings: [
+      { score: 'X', r: 0.05, color: '#fff', innerColor: '#fff' },
+      { score: 10, r: 0.09, color: '#fff' },
+      { score: 9,  r: 0.14, color: '#fff' },
+      { score: 8,  r: 0.21, color: '#000' },
+      { score: 7,  r: 0.28, color: '#000' },
+      { score: 6,  r: 0.37, color: '#000' },
+      { score: 5,  r: 0.47, color: '#000' },
+      { score: 4,  r: 0.57, color: '#000' },
+      { score: 3,  r: 0.68, color: '#000' },
+      { score: 2,  r: 0.78, color: '#000' },
+      { score: 1,  r: 0.88, color: '#000' },
+    ],
+    bgColor: '#f8f4e0',
+    bullColor: '#111',
+    innerRings: 2,
+  },
+  rifle: {
+    name: 'Винтовочная 300м',
+    rings: [
+      { score: 'X', r: 0.04, color: '#fff' },
+      { score: 10, r: 0.08, color: '#fff' },
+      { score: 9,  r: 0.14, color: '#fff' },
+      { score: 8,  r: 0.22, color: '#000' },
+      { score: 7,  r: 0.30, color: '#000' },
+      { score: 6,  r: 0.40, color: '#000' },
+      { score: 5,  r: 0.50, color: '#000' },
+      { score: 4,  r: 0.62, color: '#000' },
+      { score: 3,  r: 0.74, color: '#000' },
+      { score: 2,  r: 0.86, color: '#000' },
+      { score: 1,  r: 0.96, color: '#000' },
+    ],
+    bgColor: '#f0ede0',
+    bullColor: '#222',
+    innerRings: 2,
+  },
+  airgun: {
+    name: 'Пневматика 10м',
+    rings: [
+      { score: 'X', r: 0.04, color: '#fff' },
+      { score: 10, r: 0.07, color: '#fff' },
+      { score: 9,  r: 0.13, color: '#fff' },
+      { score: 8,  r: 0.20, color: '#000' },
+      { score: 7,  r: 0.28, color: '#000' },
+      { score: 6,  r: 0.38, color: '#000' },
+      { score: 5,  r: 0.49, color: '#000' },
+      { score: 4,  r: 0.60, color: '#000' },
+      { score: 3,  r: 0.73, color: '#000' },
+      { score: 2,  r: 0.84, color: '#000' },
+      { score: 1,  r: 0.95, color: '#000' },
+    ],
+    bgColor: '#f5f2e8',
+    bullColor: '#111',
+    innerRings: 2,
+  },
+  biathlon: {
+    name: 'Биатлон',
+    rings: [
+      { score: 'X', r: 0.12, color: '#fff' },
+      { score: 5,  r: 0.25, color: '#fff' },
+      { score: 4,  r: 0.40, color: '#111' },
+      { score: 3,  r: 0.57, color: '#111' },
+      { score: 2,  r: 0.76, color: '#111' },
+      { score: 1,  r: 0.93, color: '#111' },
+    ],
+    bgColor: '#1a1a2e',
+    bullColor: '#eee',
+    innerRings: 1,
+  },
+  silhouette: {
+    name: 'Силуэт',
+    rings: [
+      { score: 5, r: 0.15, color: '#fff' },
+      { score: 4, r: 0.30, color: '#fff' },
+      { score: 3, r: 0.50, color: '#fff' },
+      { score: 2, r: 0.70, color: '#aaa' },
+      { score: 1, r: 0.90, color: '#888' },
+    ],
+    bgColor: '#2a1a0e',
+    bullColor: '#eee',
+    innerRings: 0,
+  },
+};
+
+// ═══════════════════════════════════════════════════════
+//  TARGET CANVAS
+// ═══════════════════════════════════════════════════════
+const tCanvas = document.getElementById('targetCanvas');
+const tCtx = tCanvas.getContext('2d');
+
+function resizeTargetCanvas() {
+  const rect = tCanvas.parentElement.getBoundingClientRect();
+  tCanvas.width = rect.width;
+  tCanvas.height = rect.height;
+  drawTarget();
+}
+
+function drawTarget(highlightHit = null) {
+  const w = tCanvas.width, h = tCanvas.height;
+  const cfg = TARGET_CONFIGS[state.targetType];
+  tCtx.clearRect(0, 0, w, h);
+
+  // Background
+  tCtx.fillStyle = '#0a0c10';
+  tCtx.fillRect(0, 0, w, h);
+
+  const cx = w / 2, cy = h / 2;
+  const R = Math.min(w, h) * 0.44 * state.targetZoom;
+
+  // Draw rings (outer → inner)
+  const ringsRev = [...cfg.rings].reverse();
+  ringsRev.forEach((ring, i) => {
+    const radius = ring.r * R / cfg.rings[cfg.rings.length - 1].r;
+
+    // Alternating black/white for classic targets
+    if (state.targetType === 'pistol' || state.targetType === 'rifle' || state.targetType === 'airgun') {
+      const score = ring.score === 'X' ? 11 : ring.score;
+      if (score >= 9) {
+        tCtx.fillStyle = '#111';
+      } else if (score === 8 || score === 7) {
+        tCtx.fillStyle = '#111';
+      } else {
+        const alt = (11 - score) % 2;
+        tCtx.fillStyle = alt === 0 ? '#ddd' : '#fff';
+      }
+      // Override for inner rings
+      if (score >= 10) tCtx.fillStyle = '#111';
+    } else {
+      tCtx.fillStyle = ring.bgColor || cfg.bgColor || '#222';
+    }
+
+    tCtx.beginPath();
+    tCtx.arc(cx, cy, radius, 0, Math.PI * 2);
+    tCtx.fill();
+
+    // Ring border
+    tCtx.strokeStyle = 'rgba(255,255,255,0.12)';
+    tCtx.lineWidth = 0.5;
+    tCtx.stroke();
+
+    // Score label
+    if (ring.score !== 'X' && radius > 14) {
+      const score = ring.score;
+      // Place label near top of ring
+      const prevR = i < ringsRev.length - 1 ? ringsRev[i + 1].r * R / cfg.rings[cfg.rings.length - 1].r : 0;
+      const labelY = cy - (radius + prevR) / 2 + 4;
+      tCtx.fillStyle = score >= 8 ? '#fff' : '#333';
+      tCtx.font = `${Math.max(8, radius * 0.12)}px Segoe UI`;
+      tCtx.textAlign = 'center';
+      tCtx.fillText(score, cx, labelY);
+    }
+  });
+
+  // Bull center + crosshair lines (subtle)
+  tCtx.strokeStyle = 'rgba(255,255,255,0.08)';
+  tCtx.lineWidth = 1;
+  tCtx.beginPath(); tCtx.moveTo(cx, cy - R * 1.1); tCtx.lineTo(cx, cy + R * 1.1); tCtx.stroke();
+  tCtx.beginPath(); tCtx.moveTo(cx - R * 1.1, cy); tCtx.lineTo(cx + R * 1.1, cy); tCtx.stroke();
+
+  // X-ring label
+  const xRing = cfg.rings[0];
+  const xR = xRing.r * R / cfg.rings[cfg.rings.length - 1].r;
+  tCtx.fillStyle = 'rgba(255,255,255,0.7)';
+  tCtx.font = `bold ${Math.max(7, xR * 0.6)}px Segoe UI`;
+  tCtx.textAlign = 'center';
+  tCtx.fillText('X', cx, cy + xR * 0.35);
+
+  // ── Draw all hits ──
+  state.hits.forEach((hit, idx) => {
+    drawHitMarker(hit, idx, highlightHit === idx);
+  });
+}
+
+function drawHitMarker(hit, idx, highlight = false) {
+  const w = tCanvas.width, h = tCanvas.height;
+  const cx = w / 2, cy = h / 2;
+  const R = Math.min(w, h) * 0.44 * state.targetZoom;
+  const cfg = TARGET_CONFIGS[state.targetType];
+
+  const px = cx + hit.normX * R;
+  const py = cy + hit.normY * R;
+
+  // Shadow
+  tCtx.shadowColor = highlight ? 'rgba(255,80,80,0.8)' : 'rgba(255,50,50,0.4)';
+  tCtx.shadowBlur = highlight ? 16 : 8;
+
+  // Bullet hole
+  tCtx.beginPath();
+  tCtx.arc(px, py, highlight ? 7 : 5.5, 0, Math.PI * 2);
+  tCtx.fillStyle = '#000';
+  tCtx.fill();
+  tCtx.strokeStyle = highlight ? '#ff4' : '#ff5533';
+  tCtx.lineWidth = highlight ? 2 : 1.5;
+  tCtx.stroke();
+  tCtx.shadowBlur = 0;
+
+  // Number label
+  tCtx.fillStyle = highlight ? '#ffee00' : '#ff6644';
+  tCtx.font = `bold 9px Segoe UI`;
+  tCtx.textAlign = 'center';
+  tCtx.fillText(idx + 1, px, py - 9);
+}
+
+// ═══════════════════════════════════════════════════════
+//  SCORE CALCULATION
+// ═══════════════════════════════════════════════════════
+function calcScore(normX, normY) {
+  const cfg = TARGET_CONFIGS[state.targetType];
+  const dist = Math.sqrt(normX * normX + normY * normY);
+  const maxR = cfg.rings[cfg.rings.length - 1].r;
+  const relDist = dist / maxR;
+
+  for (let ring of cfg.rings) {
+    if (relDist <= ring.r / maxR) {
+      return ring.score;
+    }
+  }
+  return 0; // miss
+}
+
+function scoreValue(s) {
+  return s === 'X' ? 10 : (s || 0);
+}
+
+// ═══════════════════════════════════════════════════════
+//  HIT REGISTRATION
+// ═══════════════════════════════════════════════════════
+function registerHit(normX, normY, fromCamera = false) {
+  const score = calcScore(normX, normY);
+  if (score === 0) {
+    console.log('Miss — outside target');
+    return;
+  }
+
+  const hit = {
+    normX, normY,
+    score,
+    time: new Date(),
+    fromCamera,
+    id: Date.now(),
+  };
+
+  state.hits.push(hit);
+  state.totalScore += scoreValue(score);
+
+  const idx = state.hits.length - 1;
+
+  // Redraw target
+  drawTarget(idx);
+  setTimeout(() => drawTarget(), 1200);
+
+  // Log item
+  addHitLogItem(hit, idx);
+
+  // Update stats
+  updateStats();
+
+  // Flash effect
+  flashScreen();
+
+  // Audio beep
+  playBeep(score);
+}
+
+function addHitLogItem(hit, idx) {
+  const log = document.getElementById('hitLog');
+  const nohits = log.querySelector('.no-hits');
+  if (nohits) nohits.remove();
+
+  const sc = hit.score;
+  const isX = sc === 'X';
+  const isBull = sc === 10 || sc === 'X';
+  const numClass = isX ? 'x' : isBull ? 'bull' : '';
+
+  const timeStr = hit.time.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const dist = Math.sqrt(hit.normX ** 2 + hit.normY ** 2).toFixed(3);
+
+  const div = document.createElement('div');
+  div.className = 'hit-item';
+  div.innerHTML = `
+    <div class="hit-num ${numClass}">${idx + 1}</div>
+    <div class="hit-info">
+      <div class="hit-score ${isX ? 'x-ring' : ''}">
+        ${isX ? '★ X-Ring' : `${sc} очков`}
+        <small style="color:var(--text2);font-weight:400;font-size:11px"> · ${hit.fromCamera ? '📷' : '🖱'}</small>
+      </div>
+      <div class="hit-meta">X: ${(hit.normX).toFixed(2)} Y: ${(hit.normY).toFixed(2)} · r=${dist}</div>
+    </div>
+    <div class="hit-time">${timeStr}</div>
+  `;
+  div.onclick = () => { drawTarget(idx); setTimeout(() => drawTarget(), 1500); };
+  log.insertBefore(div, log.firstChild);
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATS
+// ═══════════════════════════════════════════════════════
+function updateStats() {
+  const n = state.hits.length;
+  const total = state.totalScore;
+  const avg = n ? (total / n).toFixed(1) : '—';
+  const xCount = state.hits.filter(h => h.score === 'X').length;
+  const best = n ? Math.max(...state.hits.map(h => scoreValue(h.score))) : '—';
+  const bestStr = best === 10 ? 'X/10' : (best === '—' ? '—' : best);
+
+  document.getElementById('hTotalShots').textContent = n;
+  document.getElementById('hTotalScore').textContent = total;
+  document.getElementById('hAvgScore').textContent = avg;
+  document.getElementById('hBestScore').textContent = bestStr;
+
+  document.getElementById('sTotalShots').textContent = n;
+  document.getElementById('sScore').textContent = total;
+  document.getElementById('sAvg').textContent = avg;
+  document.getElementById('sXCount').textContent = xCount;
+
+  updateGroupAnalysis();
+}
+
+function updateGroupAnalysis() {
+  const info = document.getElementById('groupInfo');
+  if (state.hits.length < 2) {
+    info.innerHTML = '<div style="color:var(--text2);font-size:11px;text-align:center;padding:6px">Нужно ≥2 попаданий</div>';
+    return;
+  }
+  const xs = state.hits.map(h => h.normX);
+  const ys = state.hits.map(h => h.normY);
+  const avgX = xs.reduce((a,b)=>a+b,0)/xs.length;
+  const avgY = ys.reduce((a,b)=>a+b,0)/ys.length;
+  const spread = Math.max(...xs) - Math.min(...xs);
+  const spreadY = Math.max(...ys) - Math.min(...ys);
+  const group = Math.sqrt(spread**2 + spreadY**2).toFixed(3);
+  const poi = `${avgX >= 0 ? '+' : ''}${avgX.toFixed(2)} / ${avgY >= 0 ? '+' : ''}${avgY.toFixed(2)}`;
+
+  let direction = '';
+  if (Math.abs(avgX) > 0.05 || Math.abs(avgY) > 0.05) {
+    const angle = Math.atan2(avgY, avgX) * 180 / Math.PI;
+    if (angle > -22.5 && angle <= 22.5) direction = '→ Право';
+    else if (angle > 22.5 && angle <= 67.5) direction = '↘ Право-Низ';
+    else if (angle > 67.5 && angle <= 112.5) direction = '↓ Низ';
+    else if (angle > 112.5 && angle <= 157.5) direction = '↙ Лево-Низ';
+    else if (angle > 157.5 || angle <= -157.5) direction = '← Лево';
+    else if (angle > -157.5 && angle <= -112.5) direction = '↖ Лево-Верх';
+    else if (angle > -112.5 && angle <= -67.5) direction = '↑ Верх';
+    else direction = '↗ Право-Верх';
+  }
+
+  info.innerHTML = `
+    Кол-во: <span>${state.hits.length}</span><br>
+    Разброс группы: <span>${group}</span><br>
+    Смещение СТП: <span>${poi}</span><br>
+    ${direction ? `Рекомендация: <span style="color:var(--accent2)">${direction}</span>` : `Смещение: <span style="color:var(--accent3)">В центре ✓</span>`}
+  `;
+}
+
+// ═══════════════════════════════════════════════════════
+//  CLEAR & EXPORT
+// ═══════════════════════════════════════════════════════
+function clearHits() {
+  if (state.hits.length === 0) return;
+  if (!confirm(`Очистить все ${state.hits.length} попаданий?`)) return;
+  state.hits = [];
+  state.totalScore = 0;
+  document.getElementById('hitLog').innerHTML = `
+    <div class="no-hits">
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+        <circle cx="18" cy="18" r="17" stroke="#6a7590" stroke-width="1.5"/>
+        <circle cx="18" cy="18" r="9" stroke="#6a7590" stroke-width="1.5"/>
+        <circle cx="18" cy="18" r="2" fill="#6a7590"/>
+      </svg>
+      Попаданий нет
+    </div>`;
+  updateStats();
+  drawTarget();
+}
+
+function exportResults() {
+  if (state.hits.length === 0) { alert('Нет данных для экспорта'); return; }
+  const cfg = TARGET_CONFIGS[state.targetType];
+  let txt = `ShotTracker Pro — Результаты\n`;
+  txt += `Мишень: ${cfg.name}\n`;
+  txt += `Дата: ${new Date().toLocaleString('ru-RU')}\n`;
+  txt += `${'─'.repeat(40)}\n`;
+  txt += `№   Очки   X        Y        Время\n`;
+  state.hits.forEach((h, i) => {
+    const s = h.score === 'X' ? ' X ' : ` ${h.score} `;
+    txt += `${String(i+1).padStart(2)}  ${s.padEnd(5)}  ${h.normX.toFixed(3).padEnd(8)}  ${h.normY.toFixed(3).padEnd(8)}  ${h.time.toLocaleTimeString('ru-RU')}\n`;
+  });
+  txt += `${'─'.repeat(40)}\n`;
+  txt += `Итого выстрелов: ${state.hits.length}\n`;
+  txt += `Сумма очков:     ${state.totalScore}\n`;
+  txt += `Среднее:         ${(state.totalScore/state.hits.length).toFixed(2)}\n`;
+  txt += `X-Ring:          ${state.hits.filter(h=>h.score==='X').length}\n`;
+
+  const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `shottracker_${Date.now()}.txt`;
+  a.click();
+}
+
+// ═══════════════════════════════════════════════════════
+//  FLASH & AUDIO
+// ═══════════════════════════════════════════════════════
+function flashScreen() {
+  const el = document.createElement('div');
+  el.className = 'hit-flash';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 600);
+}
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playBeep(score) {
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    const freq = score === 'X' ? 1200 : score >= 9 ? 900 : score >= 7 ? 700 : 500;
+    osc.frequency.value = freq;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.25);
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════
+//  CLICK ON TARGET (manual registration)
+// ═══════════════════════════════════════════════════════
+tCanvas.addEventListener('click', (e) => {
+  const rect = tCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const cx = tCanvas.width / 2, cy = tCanvas.height / 2;
+  const R = Math.min(tCanvas.width, tCanvas.height) * 0.44 * state.targetZoom;
+  const normX = (x - cx) / R;
+  const normY = (y - cy) / R;
+  registerHit(normX, normY, false);
+});
+
+// ═══════════════════════════════════════════════════════
+//  SIMULATE HIT
+// ═══════════════════════════════════════════════════════
+function simulateHit() {
+  // Gaussian-ish random near center
+  const gauss = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  const normX = gauss() * 0.18;
+  const normY = gauss() * 0.18;
+  registerHit(normX, normY, true);
+}
+
+// ═══════════════════════════════════════════════════════
+//  CAMERA CONNECTION
+// ═══════════════════════════════════════════════════════
+let currentProto = 'http';
+
+document.getElementById('fps').oninput = function() {
+  document.getElementById('fpsVal').textContent = this.value;
+  state.fps = +this.value;
+};
+
+function setProto(p) {
+  currentProto = p;
+  document.querySelectorAll('.proto-tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('fieldHttp').style.display = p === 'http' ? '' : 'none';
+  document.getElementById('fieldRtsp').style.display = p === 'rtsp' ? '' : 'none';
+  document.getElementById('fieldWebcam').style.display = p === 'webcam' ? '' : 'none';
+  document.getElementById('fieldDemo').style.display = p === 'demo' ? '' : 'none';
+}
+
+async function connectCamera() {
+  closeCamModal();
+  const proto = currentProto;
+  state.protocol = proto;
+
+  if (proto === 'webcam') {
+    await connectWebcam();
+  } else if (proto === 'demo') {
+    startDemoMode();
+  } else if (proto === 'http') {
+    connectIPCamera();
+  } else if (proto === 'rtsp') {
+    const url = document.getElementById('rtspUrl').value;
+    connectIPCamera(url);
+  }
+}
+
+async function connectWebcam() {
+  try {
+    const resVal = document.getElementById('webcamRes').value.split('x');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: +resVal[0], height: +resVal[1], facingMode: 'environment' }
+    });
+    state.camStream = stream;
+    const video = document.getElementById('camVideo');
+    video.srcObject = stream;
+    video.style.display = 'block';
+    document.getElementById('camPlaceholder').style.display = 'none';
+    document.getElementById('recBadge').style.display = 'flex';
+    setConnected(true, 'Веб-камера');
+    startFrameAnalysis(video);
+  } catch(e) {
+    alert('Ошибка доступа к камере: ' + e.message);
+    setConnected(false);
+  }
+}
+
+function connectIPCamera() {
+  const url = document.getElementById('camUrl').value.trim();
+  if (!url) { alert('Введите URL камеры'); return; }
+
+  // Try to load as img stream (MJPEG)
+  const ph = document.getElementById('camPlaceholder');
+  ph.innerHTML = `<div style="color:var(--accent3);font-size:13px">⟳ Подключение к ${url}...</div>`;
+  ph.style.display = 'flex';
+
+  // Create img element for MJPEG
+  const img = document.createElement('img');
+  img.style.cssText = 'width:100%;height:100%;object-fit:contain;position:absolute;top:0;left:0';
+  img.crossOrigin = 'anonymous';
+  img.src = url;
+  img.onload = () => {
+    document.getElementById('camCard').appendChild(img);
+    ph.style.display = 'none';
+    document.getElementById('recBadge').style.display = 'flex';
+    setConnected(true, 'IP Камера');
+    // Analysis via canvas copy
+    const canvas = document.getElementById('camCanvas');
+    canvas.style.display = 'none';
+    startIPFrameAnalysis(img);
+  };
+  img.onerror = () => {
+    ph.innerHTML = `
+      <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style="opacity:.4">
+        <circle cx="20" cy="20" r="18" stroke="#ff4444" stroke-width="2"/>
+        <line x1="12" y1="12" x2="28" y2="28" stroke="#ff4444" stroke-width="2"/>
+      </svg>
+      <p style="color:#ff4444">Ошибка подключения</p>
+      <p style="font-size:11px">${url}</p>
+      <p style="font-size:10px;color:var(--text2)">Проверьте URL и доступность камеры</p>
+    `;
+    setConnected(false);
+    // Fallback: offer demo
+    setTimeout(() => {
+      if (confirm('Камера недоступна. Запустить демо-режим?')) startDemoMode();
+    }, 500);
+  };
+}
+
+// IP camera frame analysis using canvas
+function startIPFrameAnalysis(imgEl) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  let prev = null;
+
+  const analyze = () => {
+    if (!state.isAnalyzing) return;
+    try {
+      canvas.width = imgEl.naturalWidth || 640;
+      canvas.height = imgEl.naturalHeight || 480;
+      ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+      const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      if (prev) detectHitFromFrames(prev, frame, canvas.width, canvas.height);
+      prev = frame;
+    } catch(e) {}
+    setTimeout(analyze, 1000 / state.fps);
+  };
+  analyze();
+}
+
+// Webcam frame analysis
+function startFrameAnalysis(video) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  let prev = null;
+
+  const analyze = () => {
+    if (!state.isAnalyzing || !video.videoWidth) {
+      requestAnimationFrame(analyze);
+      return;
+    }
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Display zoomed video on camCanvas
+    renderCamPreview(ctx, canvas.width, canvas.height);
+
+    const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    if (prev) detectHitFromFrames(prev, frame, canvas.width, canvas.height);
+    prev = frame;
+
+    setTimeout(analyze, 1000 / state.fps);
+  };
+  analyze();
+}
+
+function renderCamPreview(srcCtx, w, h) {
+  const vc = document.getElementById('camCanvas');
+  const vctx = vc.getContext('2d');
+  vc.width = vc.offsetWidth * devicePixelRatio;
+  vc.height = vc.offsetHeight * devicePixelRatio;
+  vctx.drawImage(srcCtx.canvas, 0, 0, vc.width, vc.height);
+}
+
+// ── FRAME DIFF DETECTOR ──
+function detectHitFromFrames(prev, curr, w, h) {
+  const threshold = state.sensitivity;
+  const minBlob = state.minBlobSize;
+  let changed = [];
+
+  for (let i = 0; i < prev.data.length; i += 4) {
+    const dr = Math.abs(prev.data[i]   - curr.data[i]);
+    const dg = Math.abs(prev.data[i+1] - curr.data[i+1]);
+    const db = Math.abs(prev.data[i+2] - curr.data[i+2]);
+    const diff = (dr + dg + db) / 3;
+    if (diff > threshold) {
+      const px = (i / 4) % w;
+      const py = Math.floor((i / 4) / w);
+      changed.push([px, py]);
+    }
+  }
+
+  if (changed.length < minBlob) return;
+
+  // Cluster changed pixels → find blob centers
+  const clusters = clusterPoints(changed, 20);
+  clusters.forEach(cluster => {
+    if (cluster.length < minBlob) return;
+    const cx = cluster.reduce((s, p) => s + p[0], 0) / cluster.length;
+    const cy = cluster.reduce((s, p) => s + p[1], 0) / cluster.length;
+
+    // Map camera pixel → normalized target coords
+    // Assumes camera is aligned with target center
+    const normX = (cx / w - 0.5) * 2 * 0.9;
+    const normY = (cy / h - 0.5) * 2 * 0.9;
+    registerHit(normX, normY, true);
+  });
+}
+
+// Simple grid-based clustering
+function clusterPoints(points, gridSize) {
+  const cells = new Map();
+  points.forEach(([x, y]) => {
+    const key = `${Math.floor(x/gridSize)},${Math.floor(y/gridSize)}`;
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push([x, y]);
+  });
+  // Merge adjacent cells
+  const clusters = [];
+  const visited = new Set();
+  for (let [key, pts] of cells) {
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const cluster = [...pts];
+    const [gx, gy] = key.split(',').map(Number);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const nk = `${gx+dx},${gy+dy}`;
+        if (cells.has(nk) && !visited.has(nk)) {
+          visited.add(nk);
+          cluster.push(...cells.get(nk));
+        }
+      }
+    }
+    clusters.push(cluster);
+  }
+  return clusters;
+}
+
+// ═══════════════════════════════════════════════════════
+//  DEMO MODE
+// ═══════════════════════════════════════════════════════
+function startDemoMode() {
+  document.getElementById('camPlaceholder').style.display = 'none';
+  const canvas = document.getElementById('camCanvas');
+  canvas.style.display = 'block';
+  document.getElementById('recBadge').style.display = 'flex';
+  setConnected(true, 'Демо-режим');
+
+  renderDemoCam();
+  // Auto simulate hits every 3-7s
+  state.demoInterval = setInterval(() => {
+    if (state.isAnalyzing) simulateHit();
+    renderDemoCam();
+  }, 3000 + Math.random() * 4000);
+}
+
+function renderDemoCam() {
+  const canvas = document.getElementById('camCanvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  const w = canvas.width, h = canvas.height;
+
+  // Simulated camera view (dark with target visible)
+  ctx.fillStyle = '#1a1810';
+  ctx.fillRect(0, 0, w, h);
+
+  // Grain
+  for (let i = 0; i < 2000; i++) {
+    const gx = Math.random() * w, gy = Math.random() * h;
+    const alpha = Math.random() * 0.06;
+    ctx.fillStyle = `rgba(255,255,220,${alpha})`;
+    ctx.fillRect(gx, gy, 1, 1);
+  }
+
+  // Target silhouette
+  const R = Math.min(w, h) * 0.35;
+  const cx = w/2, cy = h/2;
+  ctx.strokeStyle = 'rgba(255,255,200,0.15)';
+  for (let r = R; r > R*0.1; r -= R*0.12) {
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
+  }
+
+  // Crosshairs (scope style)
+  ctx.strokeStyle = 'rgba(255,60,60,0.5)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx-30, cy); ctx.lineTo(cx-8, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx+8, cy); ctx.lineTo(cx+30, cy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, cy-30); ctx.lineTo(cx, cy-8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, cy+8); ctx.lineTo(cx, cy+30); ctx.stroke();
+
+  // Reticle circle
+  ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(255,60,60,0.7)'; ctx.stroke();
+
+  // Overlay text
+  ctx.fillStyle = 'rgba(68,255,136,0.7)';
+  ctx.font = '10px monospace';
+  ctx.fillText('DEMO CAM • 1280×720', 10, 18);
+  ctx.fillStyle = 'rgba(200,200,200,0.5)';
+  ctx.fillText(new Date().toLocaleTimeString('ru-RU'), 10, h - 10);
+
+  // Vignette
+  const grad = ctx.createRadialGradient(cx, cy, R*0.5, cx, cy, Math.max(w,h)*0.7);
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.7)');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+}
+
+// ═══════════════════════════════════════════════════════
+//  ANALYSIS TOGGLE
+// ═══════════════════════════════════════════════════════
+function toggleAnalysis() {
+  state.isAnalyzing = !state.isAnalyzing;
+  const btn = document.getElementById('btnAnalyze');
+  btn.textContent = state.isAnalyzing ? '⏸ Анализ: СТОП' : '▶ Анализ: СТАРТ';
+  btn.classList.toggle('active', !state.isAnalyzing);
+}
+
+// ═══════════════════════════════════════════════════════
+//  ZOOM
+// ═══════════════════════════════════════════════════════
+function changeZoom(d) { state.camZoom = Math.max(0.5, Math.min(5, state.camZoom + d)); }
+function targetZoom(d) { state.targetZoom = Math.max(0.3, Math.min(3, state.targetZoom + d)); drawTarget(); }
+
+// ═══════════════════════════════════════════════════════
+//  SETTINGS
+// ═══════════════════════════════════════════════════════
+function updateSensitivity(v) {
+  state.sensitivity = +v;
+  document.getElementById('sensVal').textContent = v;
+}
+function updateBlobSize(v) {
+  state.minBlobSize = +v;
+  document.getElementById('blobVal').textContent = v;
+}
+function changeTargetType() {
+  state.targetType = document.getElementById('targetType').value;
+  drawTarget();
+}
+
+// ═══════════════════════════════════════════════════════
+//  CONNECTION STATUS
+// ═══════════════════════════════════════════════════════
+function setConnected(ok, label = '') {
+  state.connected = ok;
+  const dot = document.getElementById('connDot');
+  const lbl = document.getElementById('connLabel');
+  dot.className = 'dot ' + (ok ? 'live' : 'error');
+  lbl.textContent = ok ? `● ${label}` : 'Подключить камеру';
+}
+
+// ═══════════════════════════════════════════════════════
+//  MODAL
+// ═══════════════════════════════════════════════════════
+function openCamModal() {
+  document.getElementById('camModal').classList.remove('hidden');
+  loadWebcamDevices();
+}
+function closeCamModal() {
+  document.getElementById('camModal').classList.add('hidden');
+}
+document.getElementById('camModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeCamModal();
+});
+
+async function loadWebcamDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const sel = document.getElementById('webcamSelect');
+    sel.innerHTML = cams.length
+      ? cams.map((c, i) => `<option value="${c.deviceId}">${c.label || `Камера ${i+1}`}</option>`).join('')
+      : '<option>Камеры не найдены</option>';
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+window.addEventListener('resize', () => {
+  resizeTargetCanvas();
+});
+resizeTargetCanvas();
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); simulateHit(); }
+  if (e.code === 'KeyA') toggleAnalysis();
+  if (e.code === 'Delete' || e.code === 'Backspace') {
+    if (document.activeElement.tagName !== 'INPUT') clearHits();
+  }
+});
+
+console.log('ShotTracker Pro initialized');
+console.log('Клавиши: Space = тест-попадание, A = вкл/выкл анализ, Del = очистить');
+</script>
+</body>
+</html>
