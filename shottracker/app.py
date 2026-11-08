@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
+import struct
 import sys
 import threading
 import time
@@ -32,6 +35,7 @@ from shottracker.targets import (
     Hit,
     draw_hits,
     export_text,
+    deviation_pct,
     group_report,
     paint_rings,
     score_at,
@@ -55,18 +59,12 @@ from shottracker.ui import (
     text_metrics,
 )
 
-# geometry.ViewGeom does not exist — ViewGeom lives in ui. Remove the bad import.
-# The duplicate import above is a mistake I must not leave. I'll fix after writing
-# by not including it. Checking the file... I included a bad import. I'll rewrite
-# the import block cleanly in a follow-up if this file is saved with it.
-# Actually I'll just write the correct file. Let me not include the bad import.
-
 ROOT = Path(__file__).resolve().parent.parent
 CALIB_PATH = ROOT / "calibration.json"
 RESULTS = ROOT / "results"
 WIN = "ShotTracker"
 WIN_W, WIN_H = 1280, 780
-HEADER_H, FOOTER_H = 56, 54
+HEADER_H, FOOTER_H = 56, 74
 
 CORNER_NAMES = ("левый верх листа", "правый верх листа", "правый низ листа", "левый низ листа")
 
@@ -118,6 +116,7 @@ class ShotApp:
         self.target_key = "pistol"
         self.hits: list[Hit] = []
         self._cleared: list[Hit] = []
+        self.session_no = 1
         self.analysis = False
         self.mode = "live"
         self.pending_corners: list[tuple[float, float]] = []
@@ -141,6 +140,31 @@ class ShotApp:
         self.highlight: int | None = None
         self.highlight_until = 0.0
         self._next_shot: float | None = None
+        self.camera_lost = False
+        self._find_camera = False
+        self._camera_misses = 0
+        self._analysis_held = False
+        self._chrome: np.ndarray | None = None
+        self._chrome_key: tuple | None = None
+        self._chrome_patches: list[tuple[int, int, int, int, np.ndarray]] = []
+        self.note = ""
+        self.prev_note = ""
+        self.carry_note = False
+        self._note_edit = False
+        self.record_enabled = False
+        self._writer: cv2.VideoWriter | None = None
+        self._video_path: Path | None = None
+        self._video_size: tuple[int, int] | None = None
+        self._video_frames = 0
+        self._video_next = 0.0
+        self._session_stamp = ""
+        self.video_parts: list[Path] = []
+        self.snaps: list[bytes] = []
+        self._cleared_snaps: list[bytes] = []
+        self.review_hits: list[Hit] = []
+        self.review_snaps: list[bytes] = []
+        self.review_index: int | None = None
+        self.browsing = False
         if world is not None:
             self.target_key = world.target_key
             self.calib = Calibration("raw", world.center, world.outer_r, None, (world.w, world.h))
@@ -160,19 +184,27 @@ class ShotApp:
         now = time.time()
         if self._announce and now < self._announce_until:
             return self._announce
+        if self.camera_lost:
+            return "Камера пропала. Нажмите «Вебка»"
         if self.mode == "corners":
             return "Правый клик — отмена"
         if self.mode == "center":
             return "Кликните центр. Правый клик — отмена"
         if self.mode == "edge":
             return "Кликните край зоны 1. Правый клик — отмена"
+        if self.browsing and self.review_index is not None:
+            hits, _snaps = self._series()
+            if hits and self.review_index > 0:
+                return self._step_text(hits, self.review_index - 1)
+            if hits:
+                return "Шаги: до первого выстрела"
         if self.calib is None:
             return "Нажмите «Центр» и отметьте мишень"
         if not self.analysis:
-            return "Анализ на паузе"
+            return "Нажмите «Старт»"
         result = self.last_result
         if result is None:
-            return "Анализ включён"
+            return "Старт включён"
         if result.status == "ok" and result.watching:
             return "Вижу новое пятно, подтверждаю…"
         return {
@@ -181,8 +213,8 @@ class ShotApp:
             "skip-shift": "Сильный сдвиг камеры — кадр пропущен",
             "skip-motion": "В кадре движение — кадр пропущен",
             "skip-noise": "Много пятен. Поднимите порог",
-            "ok": "Анализ идёт",
-        }.get(result.status, "Анализ идёт")
+            "ok": "Набор идёт",
+        }.get(result.status, "Набор идёт")
 
     def calib_banner(self) -> str:
         if self.mode == "corners":
@@ -222,14 +254,20 @@ class ShotApp:
         if self.analysis and self.calib is not None and self.mode == "live":
             self.announce("Снимаю новый эталон…")
         else:
-            self.announce("Эталон обновится, когда идёт анализ")
+            self.announce("Эталон обновится после «Старт»")
 
     def toggle_analysis(self) -> None:
         if self.calib is None:
             self.announce("Сначала откалибруйте мишень")
             return
         self.analysis = not self.analysis
-        self.announce("Анализ включён" if self.analysis else "Анализ на паузе")
+        if self.analysis:
+            self.browsing = False
+            self.review_index = None
+            self.announce("Старт")
+        else:
+            self._close_writer()
+            self.announce("Пауза")
 
     def set_target(self, key: str) -> None:
         if key not in TARGETS:
@@ -249,6 +287,54 @@ class ShotApp:
         index = TARGET_ORDER.index(self.target_key) if self.target_key in TARGET_ORDER else 0
         self.set_target(TARGET_ORDER[(index + 1) % len(TARGET_ORDER)])
 
+    def note_camera_lost(self) -> None:
+        self._camera_misses += 1
+        if self.camera_lost or self._camera_misses < 8:
+            return
+        self.camera_lost = True
+        self._analysis_held = self.analysis
+        self.analysis = False
+        self.announce("Камера пропала. Нажмите «Вебка»", 6)
+
+    def note_camera_back(self) -> None:
+        self._camera_misses = 0
+        if not self.camera_lost:
+            return
+        self.camera_lost = False
+        if self._analysis_held:
+            self.analysis = True
+            self.detector.reset()
+            self._next_shot = None
+        self.announce("Камера снова в кадре", 3)
+
+    def request_camera_search(self) -> None:
+        self._find_camera = True
+        self.announce("Ищу вебку…", 2)
+
+    def use_camera(self, source: CameraSource, *, from_demo: bool) -> None:
+        restore = self.camera_lost and self._analysis_held
+        self.camera_lost = False
+        self._camera_misses = 0
+        self._analysis_held = False
+        self.source_name = source.name
+        self.detector.reset()
+        self._next_shot = None
+        if from_demo:
+            self.world = None
+            self.analysis = False
+            self.mode = "live"
+            self.pending_corners = []
+            self.pending_center = None
+            self.calib = None
+            loaded = load_calibration(CALIB_PATH)
+            if loaded:
+                self.calib, key = loaded
+                if key in TARGETS:
+                    self.target_key = key
+        elif restore:
+            self.analysis = True
+        self.announce(f"{source.name} найдена", 4)
+
     def demo_shot(self) -> None:
         if self.world is None:
             self.announce("Вживую выстрел появится сам. Пробел — только в демо")
@@ -261,13 +347,19 @@ class ShotApp:
     def undo(self) -> None:
         if self._cleared:
             self.hits = self._cleared
+            self.snaps = list(self._cleared_snaps)
             self._cleared = []
+            self._cleared_snaps = []
             self.announce("Сброс отменён")
             return
         if not self.hits:
             self.announce("Нечего отменять")
             return
         self.hits.pop()
+        if len(self.snaps) > len(self.hits):
+            self.snaps.pop()
+        if self.review_index is not None:
+            self.review_index = min(self.review_index, len(self.hits))
         self.announce("Последний выстрел убран")
 
     def clear_hits(self) -> None:
@@ -275,7 +367,11 @@ class ShotApp:
             self.announce("Список уже пуст")
             return
         self._cleared = list(self.hits)
+        self._cleared_snaps = list(self.snaps)
         self.hits = []
+        self.snaps = []
+        self.review_index = None
+        self.browsing = False
         self.announce("Попадания очищены. «Отмена» вернёт их")
 
     def export(self) -> None:
@@ -285,9 +381,265 @@ class ShotApp:
         RESULTS.mkdir(exist_ok=True)
         path = RESULTS / f"shottracker_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         target = TARGETS[self.target_key]
-        path.write_text(export_text(self.hits, target, group_report(self.hits)), encoding="utf-8")
+        path.write_text(
+            export_text(self.hits, target, group_report(self.hits), self.note, [p.name for p in self.video_parts]),
+            encoding="utf-8",
+        )
         print(f"Сохранено: {path}")
         self.announce(f"Сохранено {path.name}")
+
+    def next_session(self) -> None:
+        if not self.hits:
+            self.announce("В этой сессии нет попаданий")
+            return
+        RESULTS.mkdir(exist_ok=True)
+        self._close_writer()
+        stamp = self._session_stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = RESULTS / f"session_{stamp}.png"
+        image = self._session_card()
+        if image is None or not cv2.imwrite(str(path), image):
+            self.announce("Не удалось сохранить схему")
+            return
+        target = TARGETS[self.target_key]
+        text_path = RESULTS / f"session_{stamp}.txt"
+        videos = [item.name for item in self.video_parts]
+        text_path.write_text(
+            export_text(self.hits, target, group_report(self.hits), self.note, videos),
+            encoding="utf-8",
+        )
+        self.review_hits = list(self.hits)
+        self.review_snaps = list(self.snaps)
+        self.hits = []
+        self.snaps = []
+        self._cleared = []
+        self._cleared_snaps = []
+        self.highlight = None
+        self.prev_note = self.note
+        if not self.carry_note:
+            self.note = ""
+        self.video_parts = []
+        self._session_stamp = ""
+        self.session_no += 1
+        self.analysis = False
+        self.browsing = True
+        self.review_index = len(self.review_hits)
+        print(f"Сессия сохранена: {path}")
+        extra = f", видео {len(videos)}" if videos else ""
+        kept = " Заметка перенесена." if self.carry_note and self.note else ""
+        self.announce(f"Схема {path.name}{extra}.{kept} Шаги: ◀ ▶", 6)
+
+    def _series(self) -> tuple[list[Hit], list[bytes]]:
+        if self.browsing and not self.hits and self.review_hits:
+            return self.review_hits, self.review_snaps
+        return self.hits, self.snaps
+
+    def _shown_hits(self) -> list[Hit]:
+        hits, _snaps = self._series()
+        if self.review_index is None:
+            return hits
+        return hits[:self.review_index]
+
+    def _step_text(self, hits: list[Hit], index: int) -> str:
+        hit = hits[index]
+        pct = deviation_pct(hit)
+        tail = ""
+        if index > 0:
+            prev = deviation_pct(hits[index - 1])
+            if pct + 0.5 < prev:
+                tail = " · лучше предыдущего"
+            elif pct > prev + 0.5:
+                tail = " · хуже предыдущего"
+        return f"Шаг {index + 1}/{len(hits)} · отклонение {pct:.0f}%{tail}"
+
+    def _announce_step(self) -> None:
+        hits, _snaps = self._series()
+        if not hits or self.review_index is None:
+            return
+        if self.review_index <= 0:
+            self.announce("Шаги: до первого выстрела", 4)
+            self.highlight = None
+            return
+        self.highlight = self.review_index - 1
+        self.highlight_until = time.time() + 3600
+        self.announce(self._step_text(hits, self.review_index - 1), 4)
+
+    def step_review(self, delta: int) -> None:
+        if self.analysis:
+            self.analysis = False
+            self._close_writer()
+        hits, _snaps = (self.review_hits, self.review_snaps) if not self.hits and self.review_hits else (self.hits, self.snaps)
+        if not hits:
+            self.announce("Нет выстрелов для шагов")
+            return
+        if not self.hits and self.review_hits:
+            self.browsing = True
+        if self.hits:
+            self.browsing = True
+        if self.review_index is None:
+            self.review_index = len(hits)
+        self.review_index = max(0, min(len(hits), self.review_index + delta))
+        self._announce_step()
+
+    def jump_review(self, index: int) -> None:
+        hits, _snaps = self._series()
+        if index < 0 or index >= len(hits):
+            return
+        if self.analysis:
+            self.analysis = False
+            self._close_writer()
+        self.browsing = True
+        self.review_index = index + 1
+        self._announce_step()
+
+    def toggle_record(self) -> None:
+        self.record_enabled = not self.record_enabled
+        if not self.record_enabled:
+            self._close_writer()
+        self.announce("Запись сессии включена" if self.record_enabled else "Запись выключена")
+
+    def toggle_carry_note(self) -> None:
+        self.carry_note = not self.carry_note
+        self.announce("Заметка перейдёт на следующую сессию" if self.carry_note else "Следующая сессия начнётся без заметки")
+
+    def copy_previous_note(self) -> None:
+        if not self.prev_note:
+            self.announce("Прошлая заметка пуста")
+            return
+        self.note = self.prev_note
+        self.announce("Заметка скопирована с прошлой сессии")
+
+    def request_note_edit(self) -> None:
+        self._note_edit = True
+
+    def edit_note(self) -> None:
+        updated = _ask_note(self.note)
+        if updated is None:
+            return
+        self.note = updated
+        self.announce("Заметка сохранена" if updated else "Заметка очищена")
+
+    def _fill_snaps(self, image: np.ndarray) -> None:
+        while len(self.snaps) < len(self.hits):
+            snap = image
+            if snap.shape[1] > 640:
+                height = max(1, int(snap.shape[0] * 640 / snap.shape[1]))
+                snap = cv2.resize(snap, (640, height), interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", snap, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            self.snaps.append(buf.tobytes() if ok else b"")
+
+    def _store_snap(self) -> None:
+        image = self.last_view.image if self.last_view is not None else self.raw_frame
+        if image is None:
+            self.snaps.append(b"")
+            return
+        self._fill_snaps(image)
+
+    def _review_snap(self) -> np.ndarray | None:
+        if not self.browsing or self.review_index is None or self.review_index <= 0:
+            return None
+        _hits, snaps = self._series()
+        index = self.review_index - 1
+        if index >= len(snaps) or not snaps[index]:
+            return None
+        frame = cv2.imdecode(np.frombuffer(snaps[index], np.uint8), cv2.IMREAD_COLOR)
+        return frame
+
+    def _close_writer(self) -> None:
+        if self._writer is not None:
+            self._writer.release()
+            self._writer = None
+        if self._video_path is not None:
+            self.video_parts.append(self._video_path)
+            self._video_path = None
+        self._video_size = None
+
+    def _write_video(self, image: np.ndarray) -> None:
+        if not self.record_enabled or not self.analysis or self.browsing:
+            return
+        now = time.time()
+        if self._writer is not None and now < self._video_next:
+            return
+        self._video_next = now + (1.0 / 12.0)
+        if self._writer is None:
+            RESULTS.mkdir(exist_ok=True)
+            if not self._session_stamp:
+                self._session_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            part = len(self.video_parts) + 1
+            name = f"session_{self._session_stamp}.avi" if part == 1 else f"session_{self._session_stamp}_{part}.avi"
+            height, width = image.shape[:2]
+            width -= width % 2
+            height -= height % 2
+            if width < 2 or height < 2:
+                return
+            path = RESULTS / name
+            writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 12.0, (width, height))
+            if not writer.isOpened():
+                self.record_enabled = False
+                self.announce("Не удалось начать запись видео")
+                return
+            self._writer = writer
+            self._video_path = path
+            self._video_size = (width, height)
+            self._video_frames = 0
+        assert self._video_size is not None
+        width, height = self._video_size
+        frame = image
+        if frame.shape[1] != width or frame.shape[0] != height:
+            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+        self._writer.write(frame)
+        self._video_frames += 1
+
+    def _session_card(self) -> np.ndarray:
+        target = TARGETS[self.target_key]
+        group = group_report(self.hits)
+        width, height = 880, 1140 if self.note.strip() else 980
+        canvas = Canvas(width, height)
+        canvas.fill(0, 0, width, height, BG)
+        canvas.text(40, 28, "SHOTTRACKER", 16, GOLD, True)
+        canvas.text(40, 56, target.name, 28, TEXT, True)
+        canvas.text(
+            40, 100,
+            f"Сессия {self.session_no}    {datetime.now().strftime('%d.%m.%Y  %H:%M')}",
+            16, MUTED, False,
+        )
+        side = 640
+        left = (width - side) // 2
+        top = 148
+        canvas.fill(left, top, side, side, (8, 8, 8))
+        cx = left + side / 2.0
+        cy = top + side / 2.0
+        radius = side * 0.46
+        paint_rings(canvas.img, cx, cy, radius, target)
+        draw_hits(canvas.img, cx, cy, radius, self.hits, None, show_poi=True)
+        canvas.rect(left, top, side, side, GOLD, 1)
+        total = sum(score_points(hit.score, target) for hit in self.hits)
+        count = len(self.hits)
+        average = f"{total / count:.1f}" if count else "—"
+        lines = [
+            f"Выстрелов   {count}",
+            f"Сумма   {total}",
+            f"Среднее   {average}",
+            f"Лучший   {_best_label(self.hits, target)}",
+        ]
+        if group:
+            lines.extend((
+                f"Разброс   {group['spread']:.3f}",
+                f"СТП   {group['avg_x']:+.2f} / {group['avg_y']:+.2f}",
+                f"Смещение   {group['direction']}",
+            ))
+        if devs := [deviation_pct(hit) for hit in self.hits]:
+            lines.append(f"Отклонение   {sum(devs) / len(devs):.0f}%")
+        y = top + side + 22
+        for index, line in enumerate(lines):
+            column = index // 4
+            row = index % 4
+            canvas.text(40 + column * 420, y + row * 28, line, 18, TEXT, False)
+        if self.note.strip():
+            note_y = y + 4 * 28 + 10
+            canvas.text(40, note_y, "ЗАМЕТКА", 13, GOLD, True)
+            for index, line in enumerate(_wrap_note(self.note)[:5]):
+                canvas.text(40, note_y + 22 + index * 22, line, 16, TEXT, False)
+        return canvas.finish()
 
     def auto_circle(self) -> None:
         if self.raw_frame is None:
@@ -326,6 +678,8 @@ class ShotApp:
             self.take_reference()
         elif ident == "analysis":
             self.toggle_analysis()
+        elif ident == "session":
+            self.next_session()
         elif ident == "export":
             self.export()
         elif ident == "clear":
@@ -346,6 +700,20 @@ class ShotApp:
             self.size_scale = min(2.5, round(self.size_scale + 0.1, 2))
         elif ident == "mask":
             self.show_mask = not self.show_mask
+        elif ident == "webcam":
+            self.request_camera_search()
+        elif ident == "record":
+            self.toggle_record()
+        elif ident == "note":
+            self.request_note_edit()
+        elif ident == "note-copy":
+            self.copy_previous_note()
+        elif ident == "note-carry":
+            self.toggle_carry_note()
+        elif ident == "step-":
+            self.step_review(-1)
+        elif ident == "step+":
+            self.step_review(1)
 
     def on_key(self, key: int) -> bool:
         if key in (27, ord("q"), ord("Q")):
@@ -361,6 +729,8 @@ class ShotApp:
             ord("R"): self.take_reference,
             ord("a"): self.toggle_analysis,
             ord("A"): self.toggle_analysis,
+            ord("n"): self.next_session,
+            ord("N"): self.next_session,
             ord("e"): self.export,
             ord("E"): self.export,
             ord("x"): self.clear_hits,
@@ -370,6 +740,10 @@ class ShotApp:
             ord(" "): self.demo_shot,
             ord("m"): self._toggle_mask,
             ord("M"): self._toggle_mask,
+            ord("v"): self.request_camera_search,
+            ord("V"): self.request_camera_search,
+            ord(","): lambda: self.step_review(-1),
+            ord("."): lambda: self.step_review(1),
             ord("-"): lambda: self.on_button("sens-"),
             ord("["): lambda: self.on_button("sens-"),
             ord("="): lambda: self.on_button("sens+"),
@@ -405,8 +779,7 @@ class ShotApp:
         for rect, index in self.hit_rows:
             rx, ry, rw, rh = rect
             if rx <= x <= rx + rw and ry <= y <= ry + rh:
-                self.highlight = index
-                self.highlight_until = time.time() + 1.6
+                self.jump_review(index)
                 return
         self._manual_click(x, y)
 
@@ -447,6 +820,8 @@ class ShotApp:
         self.announce("Калибровка сохранена. Включите анализ перед серией")
 
     def _manual_click(self, x: int, y: int) -> None:
+        if self.browsing:
+            return
         if self.schem_geom is not None:
             cx, cy, radius, bounds = self.schem_geom
             bx, by, bw, bh = bounds
@@ -475,9 +850,21 @@ class ShotApp:
         self._cleared = []
         target = TARGETS[self.target_key]
         score = score_at(norm_x, norm_y, target)
-        self.hits.append(Hit(norm_x, norm_y, score, datetime.now(), source))
+        self.hits.append(Hit(norm_x, norm_y, score, datetime.now(), source, self._video_frames))
+        self.browsing = False
+        self.review_index = None
         label = "X" if score == "X" else ("мимо" if score == 0 else str(score))
-        self.announce(f"Выстрел {len(self.hits)} · {label}", 2.4)
+        pct = deviation_pct(self.hits[-1])
+        tail = ""
+        earlier = [deviation_pct(hit) for hit in self.hits[:-1]]
+        if earlier:
+            if pct + 0.5 < earlier[-1]:
+                tail = " · лучше предыдущего"
+            elif pct > earlier[-1] + 0.5:
+                tail = " · хуже предыдущего"
+            if pct + 0.5 < min(earlier):
+                tail = " · лучший в серии"
+        self.announce(f"Выстрел {len(self.hits)} · {label} · отклонение {pct:.0f}%{tail}", 2.8)
         self.flash_until = time.time() + 0.45
         self.highlight = len(self.hits) - 1
         self.highlight_until = time.time() + 1.3
@@ -502,6 +889,9 @@ class ShotApp:
     def step_frame(self, frame: np.ndarray) -> np.ndarray:
         self.raw_frame = frame
         self.frame_size = (frame.shape[1], frame.shape[0])
+        snap = self._review_snap()
+        if snap is not None and self.mode == "live":
+            return self._render(snap, "raw", None, None)
         view = None
         result = None
         space = "raw"
@@ -536,11 +926,16 @@ class ShotApp:
                 self.last_result = None
             self._annotate_work(view, result)
             preview = view.image
+            self._fill_snaps(preview)
+            self._write_video(preview)
             space = "work"
         else:
-            preview = frame.copy()
             space = "raw"
-            self._draw_pending(preview, space)
+            if self.mode == "corners" or (self.mode == "edge" and self.pending_center):
+                preview = frame.copy()
+                self._draw_pending(preview, space)
+            else:
+                preview = frame
             if not self.analysis:
                 self.last_result = None
         return self._render(preview, space, view, result)
@@ -569,16 +964,83 @@ class ShotApp:
                     int(max(8, blob.r + 4)), (0, 220, 255), 2, lineType=cv2.LINE_AA,
                 )
 
+    def _chrome_sig(self, preview: np.ndarray, space: str) -> tuple:
+        now = time.time()
+        hits = tuple((hit.norm_x, hit.norm_y, hit.score, hit.source) for hit in self.hits)
+        return (
+            preview.shape,
+            space,
+            self.mode,
+            self.pending_space,
+            len(self.pending_corners),
+            self.analysis,
+            self.camera_lost,
+            self.target_key,
+            self.session_no,
+            self.detector.sensitivity,
+            self.size_scale,
+            self.show_mask,
+            None if self.calib is None else (self.calib.space, self.calib.outer_r),
+            self.overlay_message(),
+            self._pill_text(),
+            hits,
+            now < self.flash_until,
+            self.highlight if now < self.highlight_until else None,
+            self.note,
+            self.carry_note,
+            self.record_enabled,
+            self.browsing,
+            self.review_index,
+            len(self.review_hits),
+            self.source_name,
+        )
+
     def _render(self, preview: np.ndarray, space: str, view, result) -> np.ndarray:
-        canvas = Canvas(WIN_W, WIN_H)
-        self._header(canvas)
         cam = (12, HEADER_H + 8, 742, WIN_H - HEADER_H - FOOTER_H - 16)
-        self._camera(canvas, cam, preview, space, result)
-        panel = (cam[0] + cam[2] + 10, cam[1], WIN_W - (cam[0] + cam[2] + 20), cam[3])
-        self._side(canvas, panel, view)
-        self._footer(canvas)
-        self.buttons = canvas.buttons
-        return canvas.finish()
+        sig = self._chrome_sig(preview, space)
+        if self._chrome is None or sig != self._chrome_key:
+            canvas = Canvas(WIN_W, WIN_H)
+            self._header(canvas)
+            self._camera(canvas, cam, preview, space, result)
+            panel = (cam[0] + cam[2] + 10, cam[1], WIN_W - (cam[0] + cam[2] + 20), cam[3])
+            self._side(canvas, panel, view)
+            self._footer(canvas)
+            self.buttons = list(canvas.buttons)
+            self._chrome = canvas.finish()
+            self._chrome_key = sig
+            self._chrome_patches = self._video_patches()
+        out = self._chrome.copy()
+        ox, oy, nw, nh, scale = blit_contain(out, preview, cam)
+        self.view_geom = ViewGeom(ox, oy, nw, nh, scale, preview.shape[1], preview.shape[0], space)
+        for y1, y2, x1, x2, patch in self._chrome_patches:
+            out[y1:y2, x1:x2] = patch
+        self._rubber_band(out, ox, oy, scale)
+        if self.show_mask and result is not None and result.mask is not None and nw > 180:
+            thumb = cv2.cvtColor(result.mask, cv2.COLOR_GRAY2BGR)
+            thumb = cv2.resize(thumb, (150, 150), interpolation=cv2.INTER_NEAREST)
+            tx, ty = ox + nw - 158, oy + nh - 158
+            out[ty:ty + 150, tx:tx + 150] = thumb
+            cv2.rectangle(out, (tx, ty), (tx + 149, ty + 149), GOLD, 1)
+        return out
+
+    def _video_patches(self) -> list[tuple[int, int, int, int, np.ndarray]]:
+        geom = self.view_geom
+        chrome = self._chrome
+        if geom is None or chrome is None or geom.nw <= 0 or geom.nh <= 0:
+            return []
+        strips: list[tuple[int, int, int, int]] = []
+        if self.mode != "live":
+            strips.append((geom.oy, min(geom.oy + 34, geom.oy + geom.nh), geom.ox, geom.ox + geom.nw))
+        elif self.analysis:
+            strips.append((geom.oy, min(geom.oy + 24, geom.oy + geom.nh), geom.ox, min(geom.ox + 88, geom.ox + geom.nw)))
+        patches = []
+        height, width = chrome.shape[:2]
+        for y1, y2, x1, x2 in strips:
+            y1, y2 = max(0, y1), min(height, y2)
+            x1, x2 = max(0, x1), min(width, x2)
+            if y2 > y1 and x2 > x1:
+                patches.append((y1, y2, x1, x2, chrome[y1:y2, x1:x2].copy()))
+        return patches
 
     def _header(self, canvas: Canvas) -> None:
         canvas.fill(0, 0, WIN_W, HEADER_H, PANEL)
@@ -588,10 +1050,11 @@ class ShotApp:
         shot_w, _, _, _ = text_metrics("SHOT", 20, True)
         canvas.text(48 + shot_w + 2, 16, "TRACKER", 20, GOLD, True)
         target = TARGETS[self.target_key]
-        n = len(self.hits)
-        total = sum(score_points(hit.score, target) for hit in self.hits)
+        hits = self._series()[0]
+        n = len(hits)
+        total = sum(score_points(hit.score, target) for hit in hits)
         avg = f"{total / n:.1f}" if n else "—"
-        best = _best_label(self.hits, target)
+        best = _best_label(hits, target)
         stats = (("Выстрелы", str(n)), ("Сумма", str(total)), ("Среднее", avg), ("Лучший", best))
         x = 330
         for label, value in stats:
@@ -611,7 +1074,7 @@ class ShotApp:
         if self.mode != "live":
             return f"{self.source_name} · калибровка"
         if self.analysis:
-            return f"{self.source_name} · анализ"
+            return f"{self.source_name} · сессия {self.session_no}"
         return f"{self.source_name} · пауза"
 
     def _camera(self, canvas: Canvas, box: tuple[int, int, int, int], preview: np.ndarray, space: str, result) -> None:
@@ -621,7 +1084,7 @@ class ShotApp:
         if self.mode != "live" and nw > 0:
             canvas.fill(ox, oy, nw, 34, GOLD)
             canvas.text(ox + 12, oy + 8, self.calib_banner(), 15, INK, True)
-            self._rubber_band(canvas, ox, oy, scale)
+            self._rubber_band(canvas.img, ox, oy, scale)
         elif self.analysis and oy > 0:
             cv2.circle(canvas.img, (ox + 16, oy + 16), 5, RED, -1, lineType=cv2.LINE_AA)
             canvas.text(ox + 26, oy + 8, "LIVE", 12, RED, True)
@@ -634,7 +1097,7 @@ class ShotApp:
         flashing = time.time() < self.flash_until
         canvas.rect(*box, GOLD if flashing else BORDER, 3 if flashing else 1)
 
-    def _rubber_band(self, canvas: Canvas, ox: int, oy: int, scale: float) -> None:
+    def _rubber_band(self, image: np.ndarray, ox: int, oy: int, scale: float) -> None:
         if self.mode != "edge" or self.pending_center is None or self.mouse is None or self.view_geom is None:
             return
         if self.view_geom.space != self.pending_space:
@@ -644,7 +1107,7 @@ class ShotApp:
         radius = hypot(self.mouse[0] - sx, self.mouse[1] - sy)
         if radius < 2:
             return
-        cv2.circle(canvas.img, (int(sx), int(sy)), int(radius), GOLD, 1, lineType=cv2.LINE_AA)
+        cv2.circle(image, (int(sx), int(sy)), int(radius), GOLD, 1, lineType=cv2.LINE_AA)
 
     def _side(self, canvas: Canvas, panel: tuple[int, int, int, int], view) -> None:
         x, y, w, h = panel
@@ -654,10 +1117,12 @@ class ShotApp:
         cursor += 36
         canvas.text(x + 14, cursor, self.overlay_message(), 13, GOLD, False)
         cursor += 22
+        self._note_box(canvas, x + 12, cursor, w - 24)
+        cursor += 62
         group_h = 88
         slider_h = 64
-        rest = h - (cursor - y) - group_h - slider_h - 28
-        schem_h = int(max(200, min(rest * 0.58, 280)))
+        rest = h - (cursor - y) - group_h - slider_h - 16
+        schem_h = int(max(160, min(rest * 0.62, 250)))
         schem = (x + 12, cursor, w - 24, schem_h)
         self._schematic(canvas, schem)
         cursor += schem_h + 8
@@ -666,6 +1131,21 @@ class ShotApp:
         self._log(canvas, x + 12, cursor, w - 24, max(48, y + h - slider_h - 8 - cursor))
         self._sliders(canvas, x + 12, y + h - slider_h, w - 24)
 
+    def _note_box(self, canvas: Canvas, x: int, y: int, w: int) -> None:
+        preview = " ".join(self.note.split())
+        if preview:
+            color = TEXT
+        else:
+            preview = "Погода, ветер — кнопка «Заметка»"
+            color = MUTED
+        if len(preview) > 48:
+            preview = preview[:47] + "…"
+        canvas.text(x, y, preview, 13, color, False)
+        canvas.button("note", "Заметка", x, y + 20, 96, 26, False)
+        canvas.button("note-copy", "Из прошлой", x + 104, y + 20, 124, 26, False)
+        carry_w = min(100, max(80, w - 236))
+        canvas.button("note-carry", "Перенос", x + 236, y + 20, carry_w, 26, self.carry_note)
+
     def _schematic(self, canvas: Canvas, box: tuple[int, int, int, int]) -> None:
         x, y, w, h = box
         canvas.fill(x, y, w, h, BG)
@@ -673,14 +1153,20 @@ class ShotApp:
         cy = y + h / 2.0
         radius = min(w, h) * 0.46
         self.schem_geom = (cx, cy, radius, box)
-        highlight = self.highlight if time.time() < self.highlight_until else None
+        hits = self._shown_hits()
+        if self.review_index is not None and self.review_index > 0:
+            highlight: int | None = self.review_index - 1
+        else:
+            highlight = self.highlight if time.time() < self.highlight_until else None
+        if highlight is not None and highlight >= len(hits):
+            highlight = None
         paint_rings(canvas.img, cx, cy, radius, TARGETS[self.target_key])
-        draw_hits(canvas.img, cx, cy, radius, self.hits, highlight, show_poi=True)
+        draw_hits(canvas.img, cx, cy, radius, hits, highlight, show_poi=True)
 
     def _group_box(self, canvas: Canvas, x: int, y: int, w: int, h: int) -> None:
         canvas.round_box(x, y, w, h, PANEL2, BORDER, 8)
         canvas.text(x + 12, y + 6, "ГРУППА", 11, MUTED, True)
-        report = group_report(self.hits)
+        report = group_report(self._shown_hits())
         if report is None:
             canvas.text(x + 12, y + 34, "Нужно минимум два попадания", 14, MUTED, False)
             return
@@ -692,22 +1178,26 @@ class ShotApp:
         )
         color = GREEN if report["centered"] else RED
         canvas.text(x + 12, y + 64, f"Смещение   {report['direction']}", 15, color, True)
-        xcount = sum(1 for hit in self.hits if hit.score == "X")
+        xcount = sum(1 for hit in self._shown_hits() if hit.score == "X")
         canvas.text(x + w - 78, y + 6, f"X {xcount}", 12, GOLD, True)
 
     def _log(self, canvas: Canvas, x: int, y: int, w: int, h: int) -> None:
         self.hit_rows = []
         if h < 24:
             return
-        canvas.text(x, y, "ПОПАДАНИЯ", 11, MUTED, True)
+        hits, _snaps = self._series()
+        canvas.text(x, y, f"СЕССИЯ {self.session_no}", 11, MUTED, True)
+        canvas.button("step-", "◀", x + w - 64, y - 4, 28, 22, False)
+        canvas.button("step+", "▶", x + w - 32, y - 4, 28, 22, self.browsing)
         row_h = 22
         slots = max(0, (h - 18) // row_h)
-        if slots <= 0 or not self.hits:
-            if not self.hits:
+        if slots <= 0 or not hits:
+            if not hits:
                 canvas.text(x, y + 22, "Пока пусто — клик по мишени тоже считается", 13, MUTED, False)
             return
-        visible = list(enumerate(self.hits))[-slots:]
-        highlight = self.highlight if time.time() < self.highlight_until else None
+        visible = list(enumerate(hits))[-slots:]
+        current = self.review_index - 1 if self.review_index else None
+        highlight = current if current is not None else (self.highlight if time.time() < self.highlight_until else None)
         for row, (index, hit) in enumerate(reversed(visible)):
             yy = y + 18 + row * row_h
             if highlight == index:
@@ -715,8 +1205,10 @@ class ShotApp:
             self.hit_rows.append(((x, yy - 1, w, row_h), index))
             canvas.text(x, yy, f"{index + 1:02d}", 13, MUTED, True)
             canvas.text(x + 36, yy, _score_label(hit.score), 14, _score_color(hit.score), True)
-            source = "камера" if hit.source == "camera" else "вручную"
-            canvas.text(x + 92, yy, f"{hit.norm_x:+.2f} {hit.norm_y:+.2f}   {hit.stamp.strftime('%H:%M:%S')}   {source}", 13, TEXT, False)
+            pct = deviation_pct(hit)
+            tone = GREEN if pct < 15 else RED if pct > 50 else TEXT
+            canvas.text(x + 78, yy, f"{pct:.0f}%", 14, tone, True)
+            canvas.text(x + 140, yy, hit.stamp.strftime("%H:%M:%S"), 13, MUTED, False)
 
     def _sliders(self, canvas: Canvas, x: int, y: int, w: int) -> None:
         canvas.text(x, y + 4, f"Порог {self.detector.sensitivity}", 13, TEXT, True)
@@ -725,16 +1217,20 @@ class ShotApp:
         canvas.text(x, y + 36, f"Пятно ×{self.size_scale:.1f}", 13, TEXT, True)
         canvas.button("size-", "−", x + 108, y + 32, 28, 26, False)
         canvas.button("size+", "+", x + 140, y + 32, 28, 26, False)
-        canvas.button("mask", "Маска", x + w - 86, y + 32, 86, 26, self.show_mask)
+        canvas.button("mask", "Маска", x + w - 178, y + 32, 84, 26, self.show_mask)
+        canvas.button("record", "Запись", x + w - 86, y + 32, 86, 26, self.record_enabled)
 
     def _footer(self, canvas: Canvas) -> None:
         canvas.fill(0, WIN_H - FOOTER_H, WIN_W, FOOTER_H, PANEL)
+        start_label = "Стоп" if self.analysis else "Старт"
         items = [
             ("center", "Центр", self.mode in ("center", "edge") and self.pending_space == "raw"),
             ("corners", "4 угла", self.mode == "corners" or self.pending_space == "warp" and self.mode != "live"),
             ("auto", "Авто", False),
+            ("webcam", "Вебка", self.camera_lost),
             ("reference", "Эталон", False),
-            ("analysis", "Анализ", self.analysis),
+            ("analysis", start_label, self.analysis),
+            ("session", "Новая", False),
             ("export", "Экспорт", False),
             ("clear", "Сброс", False),
             ("undo", "Отмена", False),
@@ -743,14 +1239,22 @@ class ShotApp:
             items.append(("shot", "Выстрел", False))
         gap = 8
         widths = []
-        for _ident, label, _active in items:
-            tw, _, _, _ = text_metrics(label, 14, True)
-            widths.append(tw + 28)
+        for ident, label, _active in items:
+            size = 20 if ident == "analysis" else 14
+            extra = 56 if ident == "analysis" else 28
+            tw, _, _, _ = text_metrics(label, size, True)
+            widths.append(max(tw + extra, 156 if ident == "analysis" else 0))
         total = sum(widths) + gap * (len(items) - 1)
         x = max(8, (WIN_W - total) // 2)
-        y = WIN_H - FOOTER_H + 11
+        small_h = 32
+        start_h = 52
+        y_small = WIN_H - FOOTER_H + (FOOTER_H - small_h) // 2
+        y_start = WIN_H - FOOTER_H + (FOOTER_H - start_h) // 2
         for (ident, label, active), width in zip(items, widths):
-            canvas.button(ident, label, x, y, width, 32, active)
+            if ident == "analysis":
+                canvas.button(ident, label, x, y_start, width, start_h, active, size=20, radius=12)
+            else:
+                canvas.button(ident, label, x, y_small, width, small_h, active)
             x += width + gap
 
 
@@ -781,19 +1285,26 @@ def _best_label(hits: list[Hit], target) -> str:
 
 class CameraSource:
     def __init__(self, index: int):
+        self.index = index
         self.cap = _open_camera(index)
         self.name = f"Камера {index}"
+        self.last: np.ndarray | None = None
         if self.cap is None:
             raise RuntimeError(f"Камера {index} не открылась")
 
     def read(self) -> tuple[bool, np.ndarray | None]:
+        if self.cap is None or not self.cap.isOpened():
+            return False, self.last
         ok, frame = self.cap.read()
         if not ok or frame is None:
-            return False, None
-        return True, downscale(frame)
+            return False, self.last
+        self.last = downscale(frame)
+        return True, self.last
 
     def release(self) -> None:
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
 
 
 class VideoSource:
@@ -827,25 +1338,170 @@ class DemoSource:
         return None
 
 
+def _capture_indexes() -> list[int]:
+    """Индексы V4L2, с которых реально идёт картинка. Служебный узел C920 пропускается."""
+    if sys.platform == "win32" or not os.path.isdir("/sys/class/video4linux"):
+        return list(range(6))
+    indexes = []
+    for name in sorted(os.listdir("/sys/class/video4linux")):
+        if not name.startswith("video") or not name[5:].isdigit():
+            continue
+        if _v4l2_capture(f"/dev/{name}"):
+            indexes.append(int(name[5:]))
+    return indexes
+
+
+def _v4l2_capture(path: str) -> bool:
+    video = 0x00000001
+    mplane = 0x00001000
+    device_caps_flag = 0x80000000
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        buf = bytearray(104)
+        fcntl.ioctl(fd, 0x80685600, buf)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    capabilities, device_caps = struct.unpack_from("<II", buf, 84)
+    caps = device_caps if capabilities & device_caps_flag else capabilities
+    return bool(caps & (video | mplane))
+
+
+def open_first_camera(prefer: int | None = None) -> CameraSource | None:
+    indexes = _capture_indexes()
+    if prefer is not None:
+        indexes = [prefer] + [index for index in indexes if index != prefer]
+    for index in indexes:
+        try:
+            return CameraSource(index)
+        except RuntimeError:
+            continue
+    return None
+
+
+def search_camera(source, app: ShotApp):
+    prefer = source.index if isinstance(source, CameraSource) else None
+    from_demo = isinstance(source, DemoSource)
+    previous = source if isinstance(source, CameraSource) else None
+    if previous is not None:
+        previous.release()
+    found = open_first_camera(prefer)
+    if found is None:
+        app.announce("Вебка не найдена", 4)
+        if previous is not None:
+            if not app.camera_lost:
+                app._analysis_held = app.analysis
+                app.analysis = False
+            app.camera_lost = True
+        return previous if previous is not None else source
+    if previous is None:
+        source.release()
+    app.use_camera(found, from_demo=from_demo)
+    return found
+
+
 def _open_camera(index: int):
-    backends = [cv2.CAP_DSHOW] if sys.platform == "win32" else [cv2.CAP_ANY]
-    for backend in backends:
+    backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_V4L2
+    # Сначала MJPG: C920 в YUYV отдаёт 720p слишком редко, и картинка отстаёт.
+    for mjpg in (True, False):
         cap = cv2.VideoCapture(index, backend)
+        if mjpg:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not cap.isOpened():
             cap.release()
             continue
         ok = False
+        frame = None
         for _ in range(8):
             ok, frame = cap.read()
             if ok and frame is not None:
                 break
-        if ok:
-            return cap
-        cap.release()
+        if not ok or frame is None:
+            cap.release()
+            continue
+        if mjpg:
+            fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+            code = "".join(chr((fourcc >> (8 * i)) & 255) for i in range(4))
+            if "MJPG" not in code.upper():
+                cap.release()
+                continue
+        return cap
     return None
+
+
+def _wrap_note(text: str, width: int = 48) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        piece = word if not current else f"{current} {word}"
+        if len(piece) <= width:
+            current = piece
+            continue
+        if current:
+            lines.append(current)
+        current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _ask_note(current: str) -> str | None:
+    try:
+        import tkinter as tk
+    except ImportError:
+        print("Нет tkinter — заметку не открыть.")
+        return None
+    result: dict[str, str | None] = {"text": None}
+    root = tk.Tk()
+    root.title("Заметка сессии")
+    root.configure(bg="#161616")
+    root.geometry("520x280")
+    try:
+        root.attributes("-topmost", True)
+    except tk.TclError:
+        pass
+    tk.Label(
+        root,
+        text="Погода, ветер и прочее",
+        bg="#161616",
+        fg="#e8e0d0",
+        font=("DejaVu Sans", 12),
+    ).pack(anchor="w", padx=16, pady=(14, 6))
+    box = tk.Text(
+        root,
+        height=8,
+        wrap="word",
+        bg="#101010",
+        fg="#f2efe8",
+        insertbackground="#f2efe8",
+        font=("DejaVu Sans", 12),
+    )
+    box.pack(fill="both", expand=True, padx=16)
+    box.insert("1.0", current)
+
+    def save(_event=None) -> None:
+        result["text"] = box.get("1.0", "end").strip()
+        root.destroy()
+
+    def cancel(_event=None) -> None:
+        root.destroy()
+
+    row = tk.Frame(root, bg="#161616")
+    row.pack(fill="x", padx=16, pady=12)
+    tk.Button(row, text="Сохранить", command=save).pack(side="left")
+    tk.Button(row, text="Отмена", command=cancel).pack(side="left", padx=8)
+    root.bind("<Escape>", cancel)
+    root.protocol("WM_DELETE_WINDOW", cancel)
+    root.mainloop()
+    return result["text"]
 
 
 def _print_help() -> None:
@@ -862,6 +1518,10 @@ def _print_help() -> None:
     print("Чёрное яблоко при свете спереди почти не видно: поставьте свет за бумагой.")
     print("Горячие клавиши работают в английской раскладке. Кнопки — в любой.")
     print("Пробел в демо добавляет выстрел. Клик по схеме — ручное попадание.")
+    print("«Вебка» (V) — заново найти камеру, если она пропала.")
+    print("«Старт» — начать набор. «Новая» (N) — сохранить схему сессии и очистить список.")
+    print("«Запись» — писать видео сессии. «◀ ▶» или «,» «.» — шаги по выстрелам.")
+    print("«Заметка» — погода и ветер. «Перенос» копирует её на следующую сессию, «Из прошлой» — обратно.")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -882,11 +1542,10 @@ def main(argv: list[str] | None = None) -> None:
         world = DemoWorld()
         source = DemoSource(world)
     elif args.source.isdigit():
-        try:
-            source = CameraSource(int(args.source))
-        except RuntimeError as exc:
-            print(exc)
-            print("Камера не найдена, запускаю демо. Для своей камеры: python app.py --source 1")
+        source = open_first_camera(int(args.source))
+        if source is None:
+            print(f"Камера {args.source} не открылась")
+            print("Камера не найдена, запускаю демо. Нажмите «Вебка», когда она появится.")
             world = DemoWorld()
             source = DemoSource(world)
     else:
@@ -911,19 +1570,33 @@ def main(argv: list[str] | None = None) -> None:
                 elif now >= app._next_shot:
                     app.world.add_random_hole()
                     app._next_shot = now + float(rng.uniform(3.2, 5.8))
+            if app._find_camera:
+                app._find_camera = False
+                source = search_camera(source, app)
+            if app._note_edit:
+                app._note_edit = False
+                app.edit_note()
             ok, frame = source.read()
-            if frame is None:
+            if isinstance(source, CameraSource):
+                if ok and frame is not None:
+                    app.note_camera_back()
+                else:
+                    app.note_camera_lost()
+                    if frame is None:
+                        frame = np.zeros((720, 1280, 3), np.uint8)
+            elif frame is None:
                 print("Нет кадра.")
                 break
-            if not ok:
+            elif not ok:
                 app.announce("Видео закончилось")
                 app.analysis = False
             canvas = app.step_frame(frame)
             cv2.imshow(WIN, canvas)
-            key = cv2.waitKey(15)
+            key = cv2.waitKey(1)
             if key != -1 and not app.on_key(key & 0xFF):
                 break
-            if cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) < 1:
+            # 0 — окно закрыли. -1 — бэкенд не сообщает видимость (Xvfb в контейнере).
+            if cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) == 0:
                 break
     finally:
         source.release()

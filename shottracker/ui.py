@@ -26,11 +26,23 @@ _FONTS: dict[tuple[int, bool], ImageFont.FreeTypeFont] = {}
 def _font_path(bold: bool) -> str:
     names = ("segoeuib.ttf", "arialbd.ttf") if bold else ("segoeui.ttf", "arial.ttf")
     windir = os.environ.get("WINDIR", r"C:\Windows")
-    for name in names:
-        path = os.path.join(windir, "Fonts", name)
+    candidates = [os.path.join(windir, "Fonts", name) for name in names]
+    if bold:
+        candidates.extend((
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        ))
+    else:
+        candidates.extend((
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        ))
+    for path in candidates:
         if os.path.exists(path):
             return path
-    raise FileNotFoundError("Не найден Segoe UI или Arial")
+    raise FileNotFoundError("Не найден шрифт с кириллицей (Segoe UI, Arial или DejaVu)")
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -137,13 +149,14 @@ class Canvas:
 
     def button(
         self, ident: str, label: str, x: int, y: int, w: int, h: int, active: bool = False,
+        size: int = 14, radius: int = 8,
     ) -> Button:
         fill = GOLD if active else PANEL2
         border = GOLD if active else BORDER
         fg = INK if active else TEXT
-        self.round_box(x, y, w, h, fill, border, radius=8)
-        tw, th, left, top = text_metrics(label, 14, True)
-        self.text(x + (w - tw) / 2 - left, y + (h - th) / 2 - top, label, 14, fg, True)
+        self.round_box(x, y, w, h, fill, border, radius=radius)
+        tw, th, left, top = text_metrics(label, size, True)
+        self.text(x + (w - tw) / 2 - left, y + (h - th) / 2 - top, label, size, fg, True)
         button = Button(ident, int(x), int(y), int(w), int(h))
         self.buttons.append(button)
         return button
@@ -166,8 +179,7 @@ def blit_contain(dst: np.ndarray, src: np.ndarray, box: tuple[int, int, int, int
         return x, y, 0, 0, 1.0
     scale = min(w / iw, h / ih)
     nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-    interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
-    resized = cv2.resize(src, (nw, nh), interpolation=interp)
+    resized = cv2.resize(src, (nw, nh), interpolation=cv2.INTER_LINEAR)
     ox = x + (w - nw) // 2
     oy = y + (h - nh) // 2
     dst[oy:oy + nh, ox:ox + nw] = resized

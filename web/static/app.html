@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShotTracker</title>
+  <link rel="stylesheet" href="/static/fonts.css?v=3">
+  <link rel="stylesheet" href="/static/app.css?v=8">
+</head>
+<body>
+  <header class="sunset-bg">
+    <div class="badge"><b>Shot</b><span>Tracker</span></div>
+    <select id="history" class="history" aria-label="Сессии"></select>
+    <div class="hud">
+      <div class="hud-cash"><span>Сумма</span><b id="stat-sum">0</b></div>
+      <div class="hud-row">
+        <div class="stat"><b id="stat-count">0</b><span>выстрелы</span></div>
+        <div class="stat"><b id="stat-avg">—</b><span>среднее</span></div>
+        <div class="stat"><b id="stat-dev">—</b><span>отклонение</span></div>
+      </div>
+    </div>
+    <div class="player">
+      <span class="who" id="user-name"></span>
+      <button class="ghost" id="btn-settings" type="button">Настройки</button>
+      <button class="ghost" id="btn-logout" type="button">Выйти</button>
+    </div>
+  </header>
+  <main>
+    <section class="stage">
+      <div class="view" id="view">
+        <div class="placeholder" id="placeholder">
+          <b>Нет сигнала</b>
+          <span>Вебка, демо или адрес IP-камеры. Потом «Центр» — середина мишени и край зоны 1.</span>
+        </div>
+        <video id="video" class="view-pic" playsinline autoplay muted hidden></video>
+        <img id="preview" class="view-pic" alt="Кадр с сервера" hidden>
+        <canvas id="overlay" class="overlay"></canvas>
+        <p class="help" id="status">Загрузка…</p>
+        <div class="banner" id="banner" hidden>
+          <b id="banner-title"></b>
+          <span id="banner-sub"></span>
+        </div>
+      </div>
+    </section>
+    <aside class="side">
+      <div class="radar">
+        <div class="sheet-wrap"><canvas id="sheet"></canvas></div>
+        <div class="bars">
+          <div class="bar health" title="Средние очки от максимума"><i id="bar-score"></i></div>
+          <div class="bar armor" title="Кучность: 100% минус среднее отклонение"><i id="bar-tight"></i></div>
+        </div>
+        <div class="bar-labels"><span>Очки</span><span>Кучность</span></div>
+      </div>
+      <p id="group">Нужно минимум два попадания</p>
+      <div class="panel">
+        <div class="row head">
+          <h3>Сессия <span id="session-no">1</span></h3>
+          <span class="hint" id="step-label"></span>
+          <button class="tool square" id="btn-step-prev" type="button" aria-label="Шаг назад">◀</button>
+          <button class="tool square" id="btn-step-next" type="button" aria-label="Шаг вперёд">▶</button>
+        </div>
+        <ul class="log" id="hit-log"></ul>
+      </div>
+      <div class="panel">
+        <h3>Мишень</h3>
+        <select id="target" aria-label="Мишень"></select>
+      </div>
+      <div class="panel">
+        <h3>Заметка</h3>
+        <textarea id="note" placeholder="Погода, ветер и прочее" maxlength="2000"></textarea>
+        <div class="row">
+          <button class="tool" id="btn-copy-note" type="button">Из прошлой</button>
+          <label class="check"><input id="chk-carry" type="checkbox"> Перенос на следующую</label>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Детектор</h3>
+        <div class="sliders">
+          <span>Порог <b id="sens-val">28</b>
+            <button class="tool square" id="sens-dec" type="button">−</button>
+            <button class="tool square" id="sens-inc" type="button">+</button>
+          </span>
+          <span>Пятно <b id="size-val">1.0</b>
+            <button class="tool square" id="size-dec" type="button">−</button>
+            <button class="tool square" id="size-inc" type="button">+</button>
+          </span>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <footer>
+    <div class="group">
+      <button class="tool" id="btn-camera" type="button">Вебка</button>
+      <button class="tool" id="btn-demo" type="button">Демо</button>
+      <input class="ip" id="ip-url" placeholder="rtsp:// или http:// камера">
+      <button class="tool" id="btn-ip" type="button">IP</button>
+    </div>
+    <div class="group">
+      <button class="tool" id="btn-center" type="button">Центр</button>
+      <button class="tool" id="btn-auto" type="button">Авто</button>
+      <button class="tool" id="btn-reference" type="button">Эталон</button>
+      <button class="tool" id="btn-zoom" type="button" title="Приблизить мишень на весь кадр">Зум</button>
+    </div>
+    <button class="primary" id="btn-start" type="button">Старт</button>
+    <div class="group">
+      <button class="tool" id="btn-new" type="button">Новая</button>
+      <button class="tool" id="btn-undo" type="button">Отмена</button>
+      <button class="tool" id="btn-save-video" type="button">Сохранить видео</button>
+    </div>
+  </footer>
+
+  <div class="modal" id="settings" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 class="modal-title" id="settings-title">Настройки</h2>
+      <section class="modal-section">
+        <h3>Запись</h3>
+        <label class="check"><input id="set-record" type="checkbox"> Записывать сессию на видео</label>
+        <label class="check"><input id="set-server" type="checkbox"> Ещё и хранить видео на сервере</label>
+        <p class="hint">В ролик попадает то же, что в окне слева: кадр, кольца, метки и плашки. Без второй галочки файл скачивается только на этот компьютер.</p>
+        <a id="download-link" hidden>Скачать видео</a>
+      </section>
+      <section class="modal-section">
+        <h3>Экран</h3>
+        <label class="check"><input id="set-zoom" type="checkbox"> Приближать мишень после калибровки</label>
+        <label class="range">
+          <span>Размер подписей попаданий</span>
+          <input id="set-label" type="range" min="10" max="36" step="1">
+          <b id="set-label-val">14</b>
+        </label>
+        <div class="label-sample"><i></i><span id="set-label-sample">7</span></div>
+      </section>
+      <div class="modal-actions">
+        <button class="primary" id="settings-close" type="button">Готово</button>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="record-canvas" width="1280" height="720"></canvas>
+  <script src="/static/app.js?v=9"></script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — ShotTracker</title>
+  <link rel="stylesheet" href="/static/fonts.css?v=3">
+  <link rel="stylesheet" href="/static/auth.css?v=3">
+</head>
+<body>
+  <section class="hero sunset-bg">
+    <div class="badge"><b>Shot</b><span>Tracker</span></div>
+    <h2>Каждый выстрел на счету</h2>
+    <p>Камера смотрит на мишень, сервер считает пробоины. Видео остаётся на этом компьютере, если не включить хранилище.</p>
+  </section>
+  <form class="card" id="form">
+    <h1 class="card-title">Вход</h1>
+    <label for="username">Логин</label>
+    <input id="username" name="username" autocomplete="username" required minlength="3" maxlength="32">
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required minlength="8">
+    <button id="submit" type="submit">Войти</button>
+    <p class="error" id="error"></p>
+    <p class="switch">Нет логина? <a href="/register">Регистрация</a></p>
+  </form>
+  <script>
+    const form = document.getElementById("form")
+    const error = document.getElementById("error")
+    const button = document.getElementById("submit")
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault()
+      error.textContent = ""
+      button.disabled = true
+      try {
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          error.textContent = data.detail || "Не удалось войти"
+          return
+        }
+        location.href = "/app"
+      } catch {
+        error.textContent = "Сервер не ответил"
+      } finally {
+        button.disabled = false
+      }
+    })
+  </script>
+</body>
+</html>

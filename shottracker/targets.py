@@ -106,9 +106,15 @@ class Hit:
     score: int | str
     stamp: datetime
     source: str
+    frame_i: int = -1
 
     def rescore(self, target: TargetType) -> None:
         self.score = score_at(self.norm_x, self.norm_y, target)
+
+
+def deviation_pct(hit: Hit) -> float:
+    """0% — центр мишени, 100% — внешний край зоны 1."""
+    return hypot(hit.norm_x, hit.norm_y) * 100.0
 
 
 def group_report(hits: list[Hit]) -> dict | None:
@@ -247,13 +253,19 @@ def draw_hits(
         )
 
 
-def export_text(hits: list[Hit], target: TargetType, group: dict | None) -> str:
+def export_text(
+    hits: list[Hit],
+    target: TargetType,
+    group: dict | None,
+    note: str = "",
+    videos: list[str] | None = None,
+) -> str:
     lines = [
         "ShotTracker — результаты",
         f"Мишень: {target.name}",
         f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
-        "—" * 44,
-        f"{'№':>3}  {'Очки':<6} {'X':>7} {'Y':>7}  Время     Источник",
+        "—" * 52,
+        f"{'№':>3}  {'Очки':<6} {'X':>7} {'Y':>7} {'Откл':>6}  Время     Источник",
     ]
     source_label = {"camera": "камера", "manual": "вручную"}
     for index, hit in enumerate(hits, start=1):
@@ -264,19 +276,29 @@ def export_text(hits: list[Hit], target: TargetType, group: dict | None) -> str:
         else:
             label = str(hit.score)
         lines.append(
-            f"{index:3}  {label:<6} {hit.norm_x:7.3f} {hit.norm_y:7.3f}  "
+            f"{index:3}  {label:<6} {hit.norm_x:7.3f} {hit.norm_y:7.3f} {deviation_pct(hit):5.0f}%  "
             f"{hit.stamp.strftime('%H:%M:%S')}  {source_label.get(hit.source, hit.source)}"
         )
     total = sum(score_points(hit.score, target) for hit in hits)
-    lines.append("—" * 44)
+    lines.append("—" * 52)
     lines.append(f"Выстрелов: {len(hits)}")
     lines.append(f"Сумма:     {total}")
     if hits:
         lines.append(f"Среднее:   {total / len(hits):.2f}")
+        devs = [deviation_pct(hit) for hit in hits]
+        lines.append(f"Отклонение: {sum(devs) / len(devs):.0f}% среднее, лучший {min(devs):.0f}%")
     lines.append(f"X-ring:    {sum(1 for hit in hits if hit.score == 'X')}")
     if group:
         lines.append(f"Разброс:   {group['spread']:.3f}")
         lines.append(f"СТП:       {group['avg_x']:+.3f} / {group['avg_y']:+.3f}")
         lines.append(f"Смещение:  {group['direction']}")
+    if note.strip():
+        lines.append("")
+        lines.append("Заметка:")
+        lines.append(note.strip())
+    if videos:
+        lines.append("")
+        lines.append("Видео:")
+        lines.extend(videos)
     lines.append("")
     return "\n".join(lines)

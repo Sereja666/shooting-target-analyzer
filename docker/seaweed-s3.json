@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "shottracker",
+      "credentials": [
+        {
+          "accessKey": "shottracker",
+          "secretKey": "shottracker-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

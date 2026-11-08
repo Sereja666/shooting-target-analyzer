@@ -17,6 +17,8 @@ from shottracker.geometry import translate
 ACC_FRAMES = 4
 MAX_SHIFT = 24.0
 MIN_RESPONSE = 0.05
+SAME_HOLE = 0.9
+CRESCENT_CIRCULARITY = 0.22
 
 _WINDOWS: dict[tuple[int, int], np.ndarray] = {}
 
@@ -54,6 +56,7 @@ class Blob:
     y: float
     r: float
     stable: int = 1
+    circ: float = 1.0
 
 
 @dataclass
@@ -116,11 +119,13 @@ class HoleDetector:
             return ProcessResult("ready")
 
         dx, dy, response = alignment_delta(self.reference, gray)
-        if abs(dx) > MAX_SHIFT or abs(dy) > MAX_SHIFT or (response < MIN_RESPONSE and hypot(dx, dy) > 8):
+        if response < MIN_RESPONSE:
+            # На однотонном листе фазовая корреляция неуверенна и выдаёт случайный сдвиг.
+            # Настоящий большой сдвиг всё равно отсечёт проверка доли изменившихся пикселей.
+            dx, dy = 0.0, 0.0
+        elif abs(dx) > MAX_SHIFT or abs(dy) > MAX_SHIFT:
             self._age()
             return ProcessResult("skip-shift", watching=self._watching())
-        if response < MIN_RESPONSE:
-            dx, dy = 0.0, 0.0
         aligned = translate(gray, dx, dy) if (dx or dy) else gray
 
         ref = self.reference.astype(np.float32)
@@ -136,7 +141,7 @@ class HoleDetector:
             self._age()
             return ProcessResult("skip-motion", watching=self._watching(), mask=mask, align_dx=dx, align_dy=dy)
 
-        blobs = _blobs(mask, self.min_area, self.max_area, self.min_circularity)
+        blobs = self._accept(_blobs(mask, self.min_area, self.max_area, CRESCENT_CIRCULARITY))
         if len(blobs) > 10:
             self._age()
             return ProcessResult("skip-noise", watching=self._watching(), mask=mask, align_dx=dx, align_dy=dy)
@@ -153,14 +158,29 @@ class HoleDetector:
         self.candidates = [cand for cand in self.candidates if cand.misses <= 2]
 
     def _near_confirmed(self, x: float, y: float, radius: float) -> bool:
-        limit = max(12.0, radius * 2.5)
-        return any(hypot(x - cx, y - cy) < max(limit, cr * 2.5) for cx, cy, cr in self.confirmed)
+        """Та же самая дыра: центр почти совпал с уже засчитанной."""
+        return any(
+            hypot(x - cx, y - cy) < max(4.0, SAME_HOLE * max(radius, cr))
+            for cx, cy, cr in self.confirmed
+        )
+
+    def _touches_confirmed(self, x: float, y: float, radius: float) -> bool:
+        return any(hypot(x - cx, y - cy) < (radius + cr) * 1.6 for cx, cy, cr in self.confirmed)
+
+    def _accept(self, blobs: list[Blob]) -> list[Blob]:
+        """Круглые пятна проходят всегда. Серп — только рядом с засчитанной дырой:
+        вторая пуля, задевшая первую, видна в разнице кадров как полумесяц."""
+        kept = []
+        for blob in blobs:
+            if blob.circ >= self.min_circularity or self._touches_confirmed(blob.x, blob.y, blob.r):
+                kept.append(blob)
+        return kept
 
     def _absorb(self, aligned_gray: np.ndarray, x: float, y: float, radius: float) -> None:
         if self.reference is None:
             return
         paint = np.zeros(self.reference.shape, np.uint8)
-        cv2.circle(paint, (int(round(x)), int(round(y))), int(round(radius)) + 7, 255, -1)
+        cv2.circle(paint, (int(round(x)), int(round(y))), int(round(radius * 1.15)) + 2, 255, -1)
         updated = self.reference.copy()
         updated[paint > 0] = aligned_gray[paint > 0]
         self.reference = updated
@@ -239,10 +259,12 @@ def _blobs(mask: np.ndarray, min_area: float, max_area: float, min_circ: float) 
         moment = cv2.moments(contour)
         if moment["m00"] <= 1e-3:
             continue
-        blobs.append(Blob(
-            float(moment["m10"] / moment["m00"]),
-            float(moment["m01"] / moment["m00"]),
-            float((area / pi) ** 0.5),
-        ))
+        x = float(moment["m10"] / moment["m00"])
+        y = float(moment["m01"] / moment["m00"])
+        radius = float((area / pi) ** 0.5)
+        if circularity < 0.6:
+            (ex, ey), enclosing = cv2.minEnclosingCircle(contour)
+            x, y, radius = float(ex), float(ey), float(enclosing)
+        blobs.append(Blob(x, y, radius, 1, circularity))
     blobs.sort(key=lambda blob: blob.r, reverse=True)
     return blobs[:6]

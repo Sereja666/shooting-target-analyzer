@@ -1,0 +1,27 @@
+# Окно: http://localhost:6080/vnc.html?autoconnect=1&resize=scale
+# Веб (вход, Postgres, SeaweedFS): docker compose -f docker-compose.web.yml up -d --build
+# Страница: http://localhost:8080
+# Logitech C920: /dev/video0 — кадр, /dev/video1 — служебный узел.
+# Демо без камеры: command: ["--demo", "--no-sound"]
+services:
+  shottracker:
+    build: .
+    image: shottracker
+    ports:
+      - "6080:6080"
+    environment:
+      QT_X11_NO_MITSHM: "1"
+      SHOTTRACKER_NOVNC: "1"
+      TZ: Europe/Moscow
+    # Каталог /dev, а не отдельный файл: после переподключения USB узел появляется снова.
+    device_cgroup_rules:
+      - "c 81:* rmw"
+    volumes:
+      - /dev:/dev
+      - ./results:/app/results
+      - shottracker-data:/data
+    shm_size: "256mb"
+    command: ["--no-sound"]
+
+volumes:
+  shottracker-data:

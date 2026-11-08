@@ -1,0 +1,8 @@
+{
+	local_certs
+}
+
+{$SITE_ADDRESS} {
+	tls internal
+	reverse_proxy web:8080
+}

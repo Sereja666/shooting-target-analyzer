@@ -1,0 +1,35 @@
+# Сервер в локальной сети: HTTPS через Caddy с собственным сертификатом.
+# Без HTTPS браузер не даст вебку странице, открытой не с localhost.
+# В .env рядом: SITE_ADDRESS (IP или имя сервера), SECRET_KEY, POSTGRES_PASSWORD.
+services:
+  web:
+    ports: !reset []
+    environment:
+      COOKIE_SECURE: "1"
+    command:
+      - uvicorn
+      - web.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?укажите SITE_ADDRESS в .env}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - shottracker-caddy:/data
+    depends_on:
+      - web
+
+volumes:
+  shottracker-caddy:

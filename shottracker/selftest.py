@@ -107,6 +107,24 @@ def test_pipeline() -> None:
     print("   hits:", _fmt(app))
 
 
+def test_close_group() -> None:
+    world = DemoWorld(seed=4, noise=1.6)
+    app = ShotApp(world=world, sound=False)
+    _pump(app, world, 8)
+    radius = max(6, int(round(world.outer_r * 0.028)))
+    x, y = world.center[0] + world.outer_r * 0.3, world.center[1] - world.outer_r * 0.1
+    world.add_hole(x, y)
+    _pump(app, world, 14)
+    world.add_hole(x + radius * 1.6, y)
+    _pump(app, world, 14)
+    if len(app.hits) != 2:
+        _dump(app, "close-group")
+        raise AssertionError(f"перекрытые дыры: ждали 2 попадания, есть {len(app.hits)} {_fmt(app)}")
+    _pump(app, world, 10)
+    if len(app.hits) != 2:
+        raise AssertionError(f"перекрытая дыра посчиталась повторно: {_fmt(app)}")
+
+
 def test_flash_and_motion() -> None:
     world = DemoWorld(seed=3, noise=1.5)
     app = ShotApp(world=world, sound=False)
@@ -181,6 +199,7 @@ def run() -> int:
         test_geometry,
         test_auto_circle,
         test_pipeline,
+        test_close_group,
         test_flash_and_motion,
     ]
     failed = 0
