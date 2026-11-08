@@ -1,0 +1,11 @@
+# Доступ из интернета по имени, например DDNS MikroTik (IP → Cloud).
+# Скопируйте в public.caddy и задайте PUBLIC_HOST в .env.
+# Сертификат Let's Encrypt через TLS-ALPN: на роутере должен быть проброшен внешний 443.
+https://{$PUBLIC_HOST}:{$HTTPS_PORT} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy {$UPSTREAM}
+}

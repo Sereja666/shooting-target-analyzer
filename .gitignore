@@ -4,3 +4,4 @@ __pycache__/
 results/
 calibration.json
 .env
+docker/caddy-sites/*.caddy
