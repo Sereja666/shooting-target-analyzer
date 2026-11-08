@@ -3,6 +3,9 @@
 # В .env рядом: SITE_ADDRESS (IP или имя сервера), SECRET_KEY, POSTGRES_PASSWORD.
 services:
   web:
+    # Сборка через сеть хоста: на сервере DNS из daemon.json для контейнеров может быть недоступен.
+    build:
+      network: host
     ports: !reset []
     environment:
       COOKIE_SECURE: "1"
