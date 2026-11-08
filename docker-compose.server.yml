@@ -1,12 +1,15 @@
 # Сервер в локальной сети: HTTPS через Caddy с собственным сертификатом.
 # Без HTTPS браузер не даст вебку странице, открытой не с localhost.
 # В .env рядом: SITE_ADDRESS (IP или имя сервера), SECRET_KEY, POSTGRES_PASSWORD.
+# Caddy в сети хоста: на сервере входящий трафик из LAN может маршрутизироваться
+# в VPN, и проброс порта в контейнер до него не доходит. Порт 80 не занимается.
 services:
   web:
     # Сборка через сеть хоста: на сервере DNS из daemon.json для контейнеров может быть недоступен.
     build:
       network: host
-    ports: !reset []
+    ports: !override
+      - "127.0.0.1:${WEB_LOCAL_PORT:-18080}:8080"
     environment:
       COOKIE_SECURE: "1"
     command:
@@ -23,10 +26,11 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    ports:
-      - "443:443"
+    network_mode: host
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:?укажите SITE_ADDRESS в .env}
+      HTTPS_PORT: ${HTTPS_PORT:-443}
+      UPSTREAM: 127.0.0.1:${WEB_LOCAL_PORT:-18080}
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
       - shottracker-caddy:/data
