@@ -261,7 +261,7 @@ def export_text(
     videos: list[str] | None = None,
 ) -> str:
     lines = [
-        "ShotTracker — результаты",
+        "Great Shot Target — результаты",
         f"Мишень: {target.name}",
         f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
         "—" * 52,

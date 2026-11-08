@@ -51,7 +51,7 @@ async def lifespan(_app: FastAPI):
         analyzer.close()
 
 
-app = FastAPI(title="ShotTracker", lifespan=lifespan)
+app = FastAPI(title="Great Shot Target", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,

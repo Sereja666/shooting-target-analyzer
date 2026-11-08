@@ -1,4 +1,4 @@
-"""Окно ShotTracker: камера, калибровка, попадания, очки и группа."""
+"""Окно Great Shot Target: камера, калибровка, попадания, очки и группа."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ from shottracker.ui import (
 ROOT = Path(__file__).resolve().parent.parent
 CALIB_PATH = ROOT / "calibration.json"
 RESULTS = ROOT / "results"
-WIN = "ShotTracker"
+WIN = "Great Shot Target"
 WIN_W, WIN_H = 1280, 780
 HEADER_H, FOOTER_H = 56, 74
 
@@ -595,7 +595,7 @@ class ShotApp:
         width, height = 880, 1140 if self.note.strip() else 980
         canvas = Canvas(width, height)
         canvas.fill(0, 0, width, height, BG)
-        canvas.text(40, 28, "SHOTTRACKER", 16, GOLD, True)
+        canvas.text(40, 28, "GREAT SHOT TARGET", 16, GOLD, True)
         canvas.text(40, 56, target.name, 28, TEXT, True)
         canvas.text(
             40, 100,
@@ -1046,9 +1046,9 @@ class ShotApp:
         canvas.fill(0, 0, WIN_W, HEADER_H, PANEL)
         cv2.circle(canvas.img, (28, 28), 12, GOLD, 2, lineType=cv2.LINE_AA)
         cv2.circle(canvas.img, (28, 28), 4, GOLD, -1, lineType=cv2.LINE_AA)
-        canvas.text(48, 16, "SHOT", 20, TEXT, True)
-        shot_w, _, _, _ = text_metrics("SHOT", 20, True)
-        canvas.text(48 + shot_w + 2, 16, "TRACKER", 20, GOLD, True)
+        canvas.text(48, 16, "GREAT SHOT", 20, TEXT, True)
+        shot_w, _, _, _ = text_metrics("GREAT SHOT", 20, True)
+        canvas.text(48 + shot_w + 8, 16, "TARGET", 20, GOLD, True)
         target = TARGETS[self.target_key]
         hits = self._series()[0]
         n = len(hits)
@@ -1505,7 +1505,7 @@ def _ask_note(current: str) -> str | None:
 
 
 def _print_help() -> None:
-    print("ShotTracker — попадания с камеры")
+    print("Great Shot Target — попадания с камеры")
     print("  Демо:      python app.py --demo")
     print("  Камера:    python app.py")
     print("  Видео:     python app.py --source запись.mp4")
@@ -1526,7 +1526,7 @@ def _print_help() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     _console_utf8()
-    parser = argparse.ArgumentParser(description="ShotTracker — фиксация попаданий по мишени")
+    parser = argparse.ArgumentParser(description="Great Shot Target — фиксация попаданий по мишени")
     parser.add_argument("--demo", action="store_true", help="Синтетическая мишень без камеры")
     parser.add_argument("--source", default="0", help="Индекс камеры, файл или URL")
     parser.add_argument("--self-test", action="store_true", help="Проверка детектора без окна")

@@ -948,7 +948,7 @@ function cameraError(error) {
     return "Доступ к камере запрещён. Разрешите его в адресной строке браузера."
   }
   if (name === "NotReadableError" || name === "AbortError") {
-    return "Камеру держит другая программа: десктопный ShotTracker, Zoom, другая вкладка. Закройте её и нажмите «Вебка» ещё раз."
+    return "Камеру держит другая программа: десктопный Great Shot Target, Zoom, другая вкладка. Закройте её и нажмите «Вебка» ещё раз."
   }
   if (name === "NotFoundError" || name === "OverconstrainedError") {
     return "Браузер не видит камеру. Проверьте, что она подключена."

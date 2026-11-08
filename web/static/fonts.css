@@ -70,5 +70,5 @@
   letter-spacing: 0.02em;
   color: var(--text);
 }
-.badge b { font-size: 1.15em; }
-.badge span { font-size: 0.72em; color: var(--gold); letter-spacing: 0.12em; }
+.badge b { font-size: 0.62em; letter-spacing: 0.1em; white-space: nowrap; }
+.badge span { font-size: 1.05em; color: var(--gold); letter-spacing: 0.02em; }

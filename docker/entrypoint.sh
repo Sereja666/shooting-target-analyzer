@@ -37,7 +37,7 @@ if [ "${SHOTTRACKER_NOVNC:-1}" = "1" ]; then
     done
     x11vnc -display "$DISPLAY" -nopw -forever -shared -wait 5 -defer 5 -rfbport 5900 >/tmp/x11vnc.log 2>&1 &
     websockify --web=/usr/share/novnc 6080 localhost:5900 >/tmp/novnc.log 2>&1 &
-    echo "Окно ShotTracker: http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
+    echo "Окно Great Shot Target: http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
 fi
 
 exec python app.py "$@"
